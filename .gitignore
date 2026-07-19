@@ -1,0 +1,47 @@
+# CMSIS-Toolbox / CMake 编译输出
+MDK-ARM/out/
+MDK-ARM/tmp/
+
+# Keil 编译输出
+Objects/
+Listings/
+MDK-ARM/Objects/
+MDK-ARM/Listings/
+
+# 编译产生的文件
+*.o
+*.obj
+*.d
+*.dep
+*.axf
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.crf
+*.lib
+*.a
+*.log
+*.build-log.htm
+
+# CMake / Ninja
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+build.ninja
+.ninja_deps
+.ninja_log
+
+# Keil 用户个人配置
+*.uvguix.*
+*.uvgui.*
+
+# 操作系统临时文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器临时文件
+*.swp
+*.tmp

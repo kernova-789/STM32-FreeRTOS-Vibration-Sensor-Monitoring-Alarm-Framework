@@ -1,0 +1,19 @@
+build-idx:
+  generated-by: csolution version 2.14.1+p9-g859cb6c9
+  csolution: CAN_DISPLAY_NOVA.csolution.yml
+  cbuild-run: out/CAN_DISPLAY_NOVA+CAN_DISPLAY_NOVA.cbuild-run.yml
+  tmpdir: tmp
+  cprojects:
+    - cproject: CAN_DISPLAY_NOVA.cproject.yml
+  cbuilds:
+    - cbuild: out/CAN_DISPLAY_NOVA/CAN_DISPLAY_NOVA/CAN_DISPLAY_NOVA+CAN_DISPLAY_NOVA.cbuild.yml
+      project: CAN_DISPLAY_NOVA
+      configuration: +CAN_DISPLAY_NOVA
+      messages:
+        info:
+          - CAN_DISPLAY_NOVA.cbuild-pack.yml - file is already up-to-date
+          - CAN_DISPLAY_NOVA+CAN_DISPLAY_NOVA.cbuild-run.yml - file is already up-to-date
+          - CAN_DISPLAY_NOVA+CAN_DISPLAY_NOVA.cbuild.yml - file is already up-to-date
+      packs-unused:
+        - pack: ARM::CMSIS-DSP@1.16.2
+        - pack: ARM::CMSIS-NN@4.1.0

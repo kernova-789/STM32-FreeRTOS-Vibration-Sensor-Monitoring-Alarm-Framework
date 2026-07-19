@@ -1,0 +1,18 @@
+solution:
+  created-by: uv2csolution@1.6.0
+  created-for: CMSIS-Toolbox@2.12.0
+  compiler: AC6@6.24.0
+  target-types:
+    - type: CAN_DISPLAY_NOVA
+      device: STM32F103CB
+      optimize: debug
+      target-set:
+        - set:
+          images:
+            - project-context: CAN_DISPLAY_NOVA
+          debugger:
+            name: ST-Link@pyOCD
+            clock: 4000000
+            protocol: swd
+  projects:
+    - project: CAN_DISPLAY_NOVA.cproject.yml
