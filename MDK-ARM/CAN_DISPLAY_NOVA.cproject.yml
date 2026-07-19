@@ -75,6 +75,10 @@ project:
         - file: ../Core/Src/stm32f1xx_it.c
         - file: ../Core/Src/stm32f1xx_hal_msp.c
         - file: ../Core/Src/stm32f1xx_hal_timebase_tim.c
+        - file: ../Core/Src/keyboard.c
+        - file: ../Core/Src/can_app.c
+        - file: ../Core/Src/communication.c
+        - file: ../Core/Src/indicator.c
     - group: Drivers/STM32F1xx_HAL_Driver
       files:
         - file: ../Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_gpio_ex.c

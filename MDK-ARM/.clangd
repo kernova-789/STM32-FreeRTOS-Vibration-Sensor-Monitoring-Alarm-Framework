@@ -1,3 +1,5 @@
 CompileFlags:
   CompilationDatabase: e:\Projects\CAN_DISPLAY_NOVA\MDK-ARM\out\CAN_DISPLAY_NOVA\CAN_DISPLAY_NOVA
-  Add: []
+  Add:
+    - -include
+    - e:\Projects\CAN_DISPLAY_NOVA\MDK-ARM\out\CAN_DISPLAY_NOVA\CAN_DISPLAY_NOVA\compile_macros.h
