@@ -1,10 +1,30 @@
 #include "indicator.h"
 #include "FreeRTOS.h"
+#include "projdefs.h"
 #include "queue.h"
 #include "stm32f103xb.h"
 #include "stm32f1xx_hal.h"
 #include "stm32f1xx_hal_gpio.h"
 
+#define INDICATOR_VALID_MASK                                                   \
+  ((UINT32_C(1) << indicator_device_count) - UINT32_C(1))
+
+enum indicator_command {
+  indicator_command_set_mask,
+  indicator_command_set_device,
+};
+struct indicator_msg_t {
+  enum indicator_command command;
+  union {
+    uint32_t state_mask; // 每一位控制一个设备，置1为激活
+    struct {
+      enum indicator_device device_id;
+      bool target_state; // true为激活
+      uint32_t
+          duration_ms; // 激活持续时间(ms)，target_state=true时生效，0为永久激活
+    } single;
+  } data;
+};
 typedef struct {
   GPIO_TypeDef *gpio_port;
   uint16_t gpio_pin;
@@ -56,31 +76,96 @@ static const indicator_device_t indicator_device_table[indicator_device_count] =
             },
 };
 static QueueHandle_t indicator_queue = NULL;
-static TickType_t indicator_time_left[indicator_device_count] = {0};    //用于管理每个设备的超时情况
+static TickType_t indicator_time_left[indicator_device_count] = {
+    0}; // 用于管理每个设备的超时情况
 
 static void indicator_task(void *arg);
+static bool indicator_build_mask_msg(struct indicator_msg_t *msg,
+                                     uint32_t state_mask);
+static bool indicator_build_device_msg(struct indicator_msg_t *msg,
+                                       enum indicator_device device_id,
+                                       bool target_state, uint32_t duration_ms);
 static void indicator_apply_state_mask(uint32_t state_mask);
 static void indicator_set_device_state(enum indicator_device device_id,
                                        bool target_state, uint32_t duration_ms);
 static void indicator_update_timers(TickType_t elapsed_ticks);
 static TickType_t indicator_get_next_timeout(void);
 
-QueueHandle_t get_indicator_queue(void) { return indicator_queue; }
 BaseType_t create_indicator_task(void) {
+  /* 队列和任务只能创建一次 */
+  if(indicator_queue != NULL){
+    return pdFALSE;
+  }
   indicator_queue = xQueueCreate(10, sizeof(struct indicator_msg_t));
   if (indicator_queue == NULL) {
     return errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY;
   }
-  return xTaskCreate(indicator_task, "indicator_task", 64, NULL, 6, NULL);
+  BaseType_t err =
+      xTaskCreate(indicator_task, "indicator_task", 64, NULL, 6, NULL);
+  if (err != pdPASS) {
+    vQueueDelete(indicator_queue);
+    indicator_queue = NULL;
+    return errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY;
+  }
+  return pdPASS;
 }
+BaseType_t indicator_set_mask(uint32_t state_mask, TickType_t wait_ticks) {
+  struct indicator_msg_t msg;
 
+  if (indicator_queue == NULL) {
+    return pdFAIL;
+  }
+  if (indicator_build_mask_msg(&msg, state_mask) == false) {
+    return pdFAIL;
+  }
+  return xQueueSend(indicator_queue, &msg, wait_ticks);
+}
+BaseType_t indicator_set_mask_from_isr(uint32_t state_mask,
+                                       BaseType_t *higher_priority_task_woken) {
+  struct indicator_msg_t msg;
+  if (indicator_queue == NULL) {
+    return pdFAIL;
+  }
+  if (indicator_build_mask_msg(&msg, state_mask) == false) {
+    return pdFAIL;
+  }
+  return xQueueSendFromISR(indicator_queue, &msg, higher_priority_task_woken);
+}
+BaseType_t indicator_set_device(enum indicator_device device_id,
+                                bool target_state, uint32_t duration_ms,
+                                TickType_t wait_ticks) {
+  struct indicator_msg_t msg;
+  if (indicator_queue == NULL) {
+    return pdFAIL;
+  }
+  if (indicator_build_device_msg(&msg, device_id, target_state, duration_ms) ==
+      false) {
+    return pdFAIL;
+  }
+  return xQueueSend(indicator_queue, &msg, wait_ticks);
+}
+BaseType_t
+indicator_set_device_from_isr(enum indicator_device device_id,
+                              bool target_state, uint32_t duration_ms,
+                              BaseType_t *higher_priority_task_woken) {
+  struct indicator_msg_t msg;
+  if (indicator_queue == NULL) {
+    return pdFAIL;
+  }
+  if (indicator_build_device_msg(&msg, device_id, target_state, duration_ms) ==
+      false) {
+    return pdFAIL;
+  }
+  return xQueueSendFromISR(indicator_queue, &msg, higher_priority_task_woken);
+}
 static void indicator_task(void *arg) {
   struct indicator_msg_t indicator_order;
   TickType_t previous_tick = xTaskGetTickCount();
-  while(1) {
+  while (1) {
     /* 没有定时设备时为portMAX_DELAY,有定时设备时为最近的到期时间 */
     TickType_t wait_ticks = indicator_get_next_timeout();
-    BaseType_t received = xQueueReceive(indicator_queue, &indicator_order, wait_ticks);
+    BaseType_t received =
+        xQueueReceive(indicator_queue, &indicator_order, wait_ticks);
     /* 无论是收到消息,还是等待超时,都先计算实际经过的时间 */
     TickType_t current_tick = xTaskGetTickCount();
 
@@ -96,14 +181,54 @@ static void indicator_task(void *arg) {
       continue;
     }
 
-    if (indicator_order.use_mask) {
+    switch (indicator_order.command) {
+    case indicator_command_set_mask:
       indicator_apply_state_mask(indicator_order.data.state_mask);
-    } else {
+      break;
+
+    case indicator_command_set_device:
       indicator_set_device_state(indicator_order.data.single.device_id,
                                  indicator_order.data.single.target_state,
                                  indicator_order.data.single.duration_ms);
+      break;
+
+    default:
+      break;
     }
   }
+}
+static bool indicator_build_mask_msg(struct indicator_msg_t *msg,
+                                     uint32_t state_mask) {
+  if (msg == NULL) {
+    return false;
+  }
+  *msg = (struct indicator_msg_t){
+      .command = indicator_command_set_mask,
+      /* 清除无效的高位,避免调用方误控制不存在的设备 */
+      .data.state_mask = state_mask & INDICATOR_VALID_MASK,
+  };
+  return true;
+}
+static bool indicator_build_device_msg(struct indicator_msg_t *msg,
+                                       enum indicator_device device_id,
+                                       bool target_state,
+                                       uint32_t duration_ms) {
+  if (msg == NULL) {
+    return false;
+  }
+  if ((device_id < alarm_led_x) || (device_id >= indicator_device_count)) {
+    return false;
+  }
+  *msg = (struct indicator_msg_t){
+      .command = indicator_command_set_device,
+      .data.single =
+          {
+              .device_id = device_id,
+              .target_state = target_state,
+              .duration_ms = duration_ms,
+          },
+  };
+  return true;
 }
 /* 使用掩码控制全部指示设备并清除超时 */
 static void indicator_write_state(enum indicator_device device_id,
@@ -191,7 +316,8 @@ static void indicator_update_timers(TickType_t elapsed_ticks) {
 /* 寻找最近一个要超时的设备 */
 static TickType_t indicator_get_next_timeout(void) {
   TickType_t next_timeout = portMAX_DELAY;
-  for (uint8_t device = alarm_led_x; device < indicator_device_count; device++) {
+  for (uint8_t device = alarm_led_x; device < indicator_device_count;
+       device++) {
     TickType_t time_left = indicator_time_left[device];
     if ((time_left > 0U) && (time_left < next_timeout)) {
       next_timeout = time_left;

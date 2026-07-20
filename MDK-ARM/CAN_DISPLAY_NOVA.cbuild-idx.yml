@@ -13,7 +13,7 @@ build-idx:
         info:
           - CAN_DISPLAY_NOVA.cbuild-pack.yml - file is already up-to-date
           - CAN_DISPLAY_NOVA+CAN_DISPLAY_NOVA.cbuild-run.yml - file is already up-to-date
-          - CAN_DISPLAY_NOVA+CAN_DISPLAY_NOVA.cbuild.yml - file generated successfully
+          - CAN_DISPLAY_NOVA+CAN_DISPLAY_NOVA.cbuild.yml - file is already up-to-date
       packs-unused:
         - pack: ARM::CMSIS-DSP@1.16.2
         - pack: ARM::CMSIS-NN@4.1.0
