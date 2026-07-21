@@ -6,8 +6,15 @@
 #include "stm32f1xx_hal.h"
 #include "stm32f1xx_hal_gpio.h"
 
+_Static_assert(INDICATOR_DEVICE_COUNT <= 32U,
+               "Indicator state mask only supports up to 32 devices");
+
+#define INDICATOR_QUEUE_LENGTH 10U
+#define INDICATOR_TASK_STACK_DEPTH 64U
+#define INDICATOR_TASK_PRIORITY 6U
+
 #define INDICATOR_VALID_MASK                                                   \
-  ((UINT32_C(1) << indicator_device_count) - UINT32_C(1))
+  ((UINT32_C(1) << INDICATOR_DEVICE_COUNT) - UINT32_C(1))
 
 enum indicator_command {
   indicator_command_set_mask,
@@ -18,7 +25,7 @@ struct indicator_msg_t {
   union {
     uint32_t state_mask; // 每一位控制一个设备，置1为激活
     struct {
-      enum indicator_device device_id;
+      indicator_device_t device_id;
       bool target_state; // true为激活
       uint32_t
           duration_ms; // 激活持续时间(ms)，target_state=true时生效，0为永久激活
@@ -29,46 +36,46 @@ typedef struct {
   GPIO_TypeDef *gpio_port;
   uint16_t gpio_pin;
   GPIO_PinState active_state;
-} indicator_device_t;
-static const indicator_device_t indicator_device_table[indicator_device_count] =
-    {
-        [alarm_led_x] =
+} indicator_device_config_t;
+static const indicator_device_config_t
+    indicator_device_table[INDICATOR_DEVICE_COUNT] = {
+        [INDICATOR_DEVICE_ALARM_LED_X] =
             {
                 .gpio_port = GPIOB,
                 .gpio_pin = GPIO_PIN_0,
                 .active_state = GPIO_PIN_RESET,
             },
-        [alarm_led_y] =
+        [INDICATOR_DEVICE_ALARM_LED_Y] =
             {
                 .gpio_port = GPIOB,
                 .gpio_pin = GPIO_PIN_9,
                 .active_state = GPIO_PIN_RESET,
             },
-        [alarm_led_z] =
+        [INDICATOR_DEVICE_ALARM_LED_Z] =
             {
                 .gpio_port = GPIOB,
                 .gpio_pin = GPIO_PIN_1,
                 .active_state = GPIO_PIN_RESET,
             },
-        [status_led_red] =
+        [INDICATOR_DEVICE_STATUS_LED_RED] =
             {
                 .gpio_port = GPIOA,
                 .gpio_pin = GPIO_PIN_7,
                 .active_state = GPIO_PIN_RESET,
             },
-        [status_led_green] =
+        [INDICATOR_DEVICE_STATUS_LED_GREEN] =
             {
                 .gpio_port = GPIOA,
                 .gpio_pin = GPIO_PIN_6,
                 .active_state = GPIO_PIN_RESET,
             },
-        [status_led_blue] =
+        [INDICATOR_DEVICE_STATUS_LED_BLUE] =
             {
                 .gpio_port = GPIOA,
                 .gpio_pin = GPIO_PIN_5,
                 .active_state = GPIO_PIN_RESET,
             },
-        [buzzer] =
+        [INDICATOR_DEVICE_BUZZER] =
             {
                 .gpio_port = GPIOA,
                 .gpio_pin = GPIO_PIN_4,
@@ -76,32 +83,34 @@ static const indicator_device_t indicator_device_table[indicator_device_count] =
             },
 };
 static QueueHandle_t indicator_queue = NULL;
-static TickType_t indicator_time_left[indicator_device_count] = {
+static TickType_t indicator_time_left[INDICATOR_DEVICE_COUNT] = {
     0}; // 用于管理每个设备的超时情况
 
 static void indicator_task(void *arg);
 static bool indicator_build_mask_msg(struct indicator_msg_t *msg,
                                      uint32_t state_mask);
 static bool indicator_build_device_msg(struct indicator_msg_t *msg,
-                                       enum indicator_device device_id,
+                                       indicator_device_t device_id,
                                        bool target_state, uint32_t duration_ms);
 static void indicator_apply_state_mask(uint32_t state_mask);
-static void indicator_set_device_state(enum indicator_device device_id,
+static void indicator_set_device_state(indicator_device_t device_id,
                                        bool target_state, uint32_t duration_ms);
 static void indicator_update_timers(TickType_t elapsed_ticks);
 static TickType_t indicator_get_next_timeout(void);
 
-BaseType_t create_indicator_task(void) {
+BaseType_t indicator_init(void) {
   /* 队列和任务只能创建一次 */
-  if(indicator_queue != NULL){
+  if (indicator_queue != NULL) {
     return pdFALSE;
   }
-  indicator_queue = xQueueCreate(10, sizeof(struct indicator_msg_t));
+  indicator_queue =
+      xQueueCreate(INDICATOR_QUEUE_LENGTH, sizeof(struct indicator_msg_t));
   if (indicator_queue == NULL) {
     return errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY;
   }
   BaseType_t err =
-      xTaskCreate(indicator_task, "indicator_task", 64, NULL, 6, NULL);
+      xTaskCreate(indicator_task, "indicator_task", INDICATOR_TASK_STACK_DEPTH,
+                  NULL, INDICATOR_TASK_PRIORITY, NULL);
   if (err != pdPASS) {
     vQueueDelete(indicator_queue);
     indicator_queue = NULL;
@@ -131,9 +140,8 @@ BaseType_t indicator_set_mask_from_isr(uint32_t state_mask,
   }
   return xQueueSendFromISR(indicator_queue, &msg, higher_priority_task_woken);
 }
-BaseType_t indicator_set_device(enum indicator_device device_id,
-                                bool target_state, uint32_t duration_ms,
-                                TickType_t wait_ticks) {
+BaseType_t indicator_set_device(indicator_device_t device_id, bool target_state,
+                                uint32_t duration_ms, TickType_t wait_ticks) {
   struct indicator_msg_t msg;
   if (indicator_queue == NULL) {
     return pdFAIL;
@@ -145,8 +153,8 @@ BaseType_t indicator_set_device(enum indicator_device device_id,
   return xQueueSend(indicator_queue, &msg, wait_ticks);
 }
 BaseType_t
-indicator_set_device_from_isr(enum indicator_device device_id,
-                              bool target_state, uint32_t duration_ms,
+indicator_set_device_from_isr(indicator_device_t device_id, bool target_state,
+                              uint32_t duration_ms,
                               BaseType_t *higher_priority_task_woken) {
   struct indicator_msg_t msg;
   if (indicator_queue == NULL) {
@@ -210,13 +218,14 @@ static bool indicator_build_mask_msg(struct indicator_msg_t *msg,
   return true;
 }
 static bool indicator_build_device_msg(struct indicator_msg_t *msg,
-                                       enum indicator_device device_id,
+                                       indicator_device_t device_id,
                                        bool target_state,
                                        uint32_t duration_ms) {
   if (msg == NULL) {
     return false;
   }
-  if ((device_id < alarm_led_x) || (device_id >= indicator_device_count)) {
+  if ((device_id < INDICATOR_DEVICE_ALARM_LED_X) ||
+      (device_id >= INDICATOR_DEVICE_COUNT)) {
     return false;
   }
   *msg = (struct indicator_msg_t){
@@ -231,13 +240,14 @@ static bool indicator_build_device_msg(struct indicator_msg_t *msg,
   return true;
 }
 /* 使用掩码控制全部指示设备并清除超时 */
-static void indicator_write_state(enum indicator_device device_id,
+static void indicator_write_state(indicator_device_t device_id,
                                   bool target_state) {
-  if ((device_id < alarm_led_x) || (device_id >= indicator_device_count)) {
+  if ((device_id < INDICATOR_DEVICE_ALARM_LED_X) ||
+      (device_id >= INDICATOR_DEVICE_COUNT)) {
     return;
   }
 
-  const indicator_device_t *device = &indicator_device_table[device_id];
+  const indicator_device_config_t *device = &indicator_device_table[device_id];
 
   GPIO_PinState output_state;
 
@@ -250,27 +260,24 @@ static void indicator_write_state(enum indicator_device device_id,
   HAL_GPIO_WritePin(device->gpio_port, device->gpio_pin, output_state);
 }
 static void indicator_apply_state_mask(uint32_t state_mask) {
-  for (uint8_t device = alarm_led_x; device < indicator_device_count;
-       device++) {
-    if (state_mask & (1UL << device)) {
-      HAL_GPIO_WritePin(indicator_device_table[device].gpio_port,
-                        indicator_device_table[device].gpio_pin,
-                        indicator_device_table[device].active_state);
-    } else if (indicator_device_table[device].active_state == GPIO_PIN_SET) {
-      HAL_GPIO_WritePin(indicator_device_table[device].gpio_port,
-                        indicator_device_table[device].gpio_pin,
-                        GPIO_PIN_RESET);
-    } else {
-      HAL_GPIO_WritePin(indicator_device_table[device].gpio_port,
-                        indicator_device_table[device].gpio_pin, GPIO_PIN_SET);
-    }
+  state_mask &= INDICATOR_VALID_MASK;
+
+  for (uint32_t device = 0U; device < (uint32_t)INDICATOR_DEVICE_COUNT;
+       ++device) {
+    const indicator_device_t device_id = (indicator_device_t)device;
+    const bool target_state = (state_mask & INDICATOR_MASK(device_id)) != 0U;
+
+    /* 掩码命令覆盖之前的单设备定时命令。 */
+    indicator_time_left[device_id] = 0U;
+    indicator_write_state(device_id, target_state);
   }
 }
 /* 设置单个设备的状态以及超时 */
-static void indicator_set_device_state(enum indicator_device device_id,
+static void indicator_set_device_state(indicator_device_t device_id,
                                        bool target_state,
                                        uint32_t duration_ms) {
-  if ((device_id < alarm_led_x) || (device_id >= indicator_device_count)) {
+  if ((device_id < INDICATOR_DEVICE_ALARM_LED_X) ||
+      (device_id >= INDICATOR_DEVICE_COUNT)) {
     return;
   }
   indicator_write_state(device_id, target_state);
@@ -297,8 +304,8 @@ static void indicator_set_device_state(enum indicator_device device_id,
 }
 /* 更新所有的超时剩余时间 */
 static void indicator_update_timers(TickType_t elapsed_ticks) {
-  for (uint8_t device = alarm_led_x; device < indicator_device_count;
-       ++device) {
+  for (uint8_t device = INDICATOR_DEVICE_ALARM_LED_X;
+       device < INDICATOR_DEVICE_COUNT; ++device) {
 
     TickType_t time_left = indicator_time_left[device];
 
@@ -307,7 +314,7 @@ static void indicator_update_timers(TickType_t elapsed_ticks) {
     }
     if (elapsed_ticks >= time_left) {
       indicator_time_left[device] = 0U;
-      indicator_write_state((enum indicator_device)device, false);
+      indicator_write_state((indicator_device_t)device, false);
     } else {
       indicator_time_left[device] = time_left - elapsed_ticks;
     }
@@ -316,8 +323,8 @@ static void indicator_update_timers(TickType_t elapsed_ticks) {
 /* 寻找最近一个要超时的设备 */
 static TickType_t indicator_get_next_timeout(void) {
   TickType_t next_timeout = portMAX_DELAY;
-  for (uint8_t device = alarm_led_x; device < indicator_device_count;
-       device++) {
+  for (uint8_t device = INDICATOR_DEVICE_ALARM_LED_X;
+       device < INDICATOR_DEVICE_COUNT; device++) {
     TickType_t time_left = indicator_time_left[device];
     if ((time_left > 0U) && (time_left < next_timeout)) {
       next_timeout = time_left;

@@ -1,42 +1,64 @@
 #pragma once
-#include "FREERTOS.h"
-#include "queue.h"
+#include "FreeRTOS.h"
+#include "stdbool.h"
 #include "stdint.h"
-#define keyboard_state_mask_t uint32_t
 
-#define KEYBOARD_SCAN_PERIOD_MS              10U
-#define KEYBOARD_PRESS_DEBOUNCE_SAMPLES       3U
+typedef uint32_t keyboard_state_mask_t;
 
-#define KEYBOARD_REPEAT_START_MS            500U
-#define KEYBOARD_FAST_REPEAT_START_MS      1500U
+typedef enum {
+  KEYBOARD_KEY_UP = 0,
+  KEYBOARD_KEY_DOWN,
+  KEYBOARD_KEY_LEFT,
+  KEYBOARD_KEY_RIGHT,
+  KEYBOARD_KEY_ENTER,
+  KEYBOARD_KEY_CANCEL,
 
-#define KEYBOARD_REPEAT_PERIOD_MS           100U
-#define KEYBOARD_FAST_REPEAT_PERIOD_MS       10U
+  KEYBOARD_KEY_COUNT,
+} keyboard_key_t;
 
-enum keyboard{
-    // no_key = 0,
-    KEYBOARD_UP_KEY,
-    KEYBOARD_DOWN_KEY,
-    KEYBOARD_LEFT_KEY,
-    KEYBOARD_RIGHT_KEY,
-    KEYBOARD_ENTER_KEY,
-    KEYBOARD_CANCEL_KEY,
-
-    KEYBOARD_KEY_COUNT,
-};
-
-enum keyboard_event {
+typedef enum {
   KEYBOARD_EVENT_PRESSED = 0,
   KEYBOARD_EVENT_REPEAT,
   KEYBOARD_EVENT_RELEASED,
-};
+} keyboard_event_type_t;
 
-struct keyboard_state_msg_t {
-  enum keyboard key;
-  enum keyboard_event event;
-};
+typedef struct {
+  keyboard_key_t key;
+  keyboard_event_type_t type;
+} keyboard_event_t;
 
-BaseType_t keyboard_receive(struct keyboard_state_msg_t *msg,
-                            TickType_t timeout_ticks);
-uint32_t get_keyboard_state_mask(void);
-BaseType_t create_keyboard_task(void);
+/*
+ * 初始化键盘队列和扫描任务。
+ *
+ * 应在系统初始化阶段调用，不允许多个任务并发调用。
+ * 重复调用时，如果已经初始化成功，则返回 pdPASS。
+ */
+BaseType_t keyboard_init(void);
+
+/*
+ * 任务上下文接口，不应在 ISR 中调用。
+ */
+BaseType_t keyboard_receive_event(keyboard_event_t *event,
+                                  TickType_t timeout_ticks);
+
+/*
+ * 获取当前所有按键的稳定状态快照。
+ * 任务上下文接口。
+ */
+keyboard_state_mask_t keyboard_get_state_mask(void);
+
+/*
+ * 从状态掩码中取出一个按下的按键。
+ *
+ * 每次返回枚举值最小的按键，并清除 mask 中对应的位。
+ * 返回 pdTRUE 表示成功取出按键；
+ * 返回 pdFALSE 表示参数无效或掩码中没有按键。
+ */
+BaseType_t keyboard_state_mask_pop_key(keyboard_state_mask_t *mask,
+                                       keyboard_key_t *key);
+                                       
+/*
+ * 查询指定按键当前是否处于稳定按下状态。
+ * 非法按键值返回 false。
+ */
+bool keyboard_is_pressed(keyboard_key_t key);
