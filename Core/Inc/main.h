@@ -57,6 +57,12 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define SCREEN_CS_Pin GPIO_PIN_8
+#define SCREEN_CS_GPIO_Port GPIOA
+#define SCREEN_RESET_Pin GPIO_PIN_9
+#define SCREEN_RESET_GPIO_Port GPIOA
+#define SCREEN_DC_Pin GPIO_PIN_10
+#define SCREEN_DC_GPIO_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
 

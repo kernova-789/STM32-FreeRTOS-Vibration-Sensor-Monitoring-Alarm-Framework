@@ -25,6 +25,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "can.h"
+#include "can_app.h"
+#include "communication.h"
+#include "keyboard.h"
+#include "screen.h"
 
 /* USER CODE END Includes */
 
@@ -114,6 +119,24 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
+  const can_app_config_t can_communication_config = {
+      .handle = &hcan,
+      .local_node = 1U,
+      .filter_bank = 0U,
+      .reassembly_timeout_ms = 100U,
+  };
+  const communication_backend_t *backend =
+      can_app_backend(&can_communication_config);
+
+  (void)argument;
+  if ((backend == NULL) ||
+      (communication_init(backend) != COMMUNICATION_STATUS_OK)) {
+    Error_Handler();
+  }
+  if ((keyboard_init() != pdPASS) || (screen_init(NULL) != pdPASS)) {
+    Error_Handler();
+  }
+
   /* Infinite loop */
   for(;;)
   {
@@ -126,4 +149,3 @@ void StartDefaultTask(void *argument)
 /* USER CODE BEGIN Application */
 
 /* USER CODE END Application */
-

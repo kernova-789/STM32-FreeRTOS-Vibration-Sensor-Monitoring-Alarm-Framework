@@ -77,6 +77,8 @@ static const keyboard_key_config_t
 };
 static QueueHandle_t keyboard_queue = NULL;
 static keyboard_state_mask_t keyboard_state_mask = 0U;
+static keyboard_activity_callback_t keyboard_activity_callback = NULL;
+static void *keyboard_activity_context = NULL;
 
 static bool keyboard_read_raw_pressed(keyboard_key_t key);
 static bool keyboard_update_key(keyboard_key_t key, TickType_t current_tick,
@@ -85,6 +87,15 @@ static void keyboard_task(void *arg);
 static keyboard_state_mask_t keyboard_key_to_mask(keyboard_key_t key);
 static bool keyboard_event_is_important(const keyboard_event_t *event);
 static BaseType_t keyboard_try_send_event(const keyboard_event_t *event);
+static void keyboard_notify_activity(void);
+
+void keyboard_set_activity_callback(keyboard_activity_callback_t callback,
+                                    void *context) {
+  taskENTER_CRITICAL();
+  keyboard_activity_callback = callback;
+  keyboard_activity_context = context;
+  taskEXIT_CRITICAL();
+}
 
 BaseType_t keyboard_init(void) {
   /* 批量检测宏定义转换为ticks后是否合法 */
@@ -327,12 +338,18 @@ static BaseType_t keyboard_try_send_event(const keyboard_event_t *event) {
    */
   if (keyboard_event_is_important(event)) {
     if (available_spaces == 0U) {
+      if (event->type == KEYBOARD_EVENT_PRESSED) {
+        keyboard_notify_activity();
+      }
       ++keyboard_event_statistics.dropped_important_events;
       return errQUEUE_FULL;
     }
 
     const BaseType_t result = xQueueSend(keyboard_queue, event, 0U);
 
+    if (event->type == KEYBOARD_EVENT_PRESSED) {
+      keyboard_notify_activity();
+    }
     if (result != pdPASS) {
       ++keyboard_event_statistics.dropped_important_events;
     }
@@ -359,4 +376,18 @@ static BaseType_t keyboard_try_send_event(const keyboard_event_t *event) {
   }
 
   return result;
+}
+
+static void keyboard_notify_activity(void) {
+  keyboard_activity_callback_t callback;
+  void *context;
+
+  taskENTER_CRITICAL();
+  callback = keyboard_activity_callback;
+  context = keyboard_activity_context;
+  taskEXIT_CRITICAL();
+
+  if (callback != NULL) {
+    callback(context);
+  }
 }

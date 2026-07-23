@@ -28,6 +28,14 @@ typedef struct {
 } keyboard_event_t;
 
 /*
+ * Optional non-blocking activity hook. It runs in the keyboard task whenever
+ * a debounced PRESSED event is produced, even if the event queue is full.
+ */
+typedef void (*keyboard_activity_callback_t)(void *context);
+void keyboard_set_activity_callback(keyboard_activity_callback_t callback,
+                                    void *context);
+
+/*
  * 初始化键盘队列和扫描任务。
  *
  * 应在系统初始化阶段调用，不允许多个任务并发调用。
@@ -56,7 +64,7 @@ keyboard_state_mask_t keyboard_get_state_mask(void);
  */
 BaseType_t keyboard_state_mask_pop_key(keyboard_state_mask_t *mask,
                                        keyboard_key_t *key);
-                                       
+
 /*
  * 查询指定按键当前是否处于稳定按下状态。
  * 非法按键值返回 false。
