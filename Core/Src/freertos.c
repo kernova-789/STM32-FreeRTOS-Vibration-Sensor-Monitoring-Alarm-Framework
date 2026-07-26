@@ -28,8 +28,9 @@
 #include "can.h"
 #include "can_app.h"
 #include "communication.h"
-#include "keyboard.h"
-#include "screen.h"
+#include "monitor_app.h"
+#include "sensor_registry.h"
+#include "settings_store.h"
 
 /* USER CODE END Includes */
 
@@ -50,14 +51,19 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
+static const can_app_config_t can_transport_configuration = {
+    .handle = &hcan,
+    .receive_fifo = CAN_RX_FIFO0,
+    .filter_bank = 0U,
+};
 
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .stack_size = 192 * 4,
+  .priority = (osPriority_t) osPriorityLow,
 };
 
 /* Private function prototypes -----------------------------------------------*/
@@ -119,29 +125,33 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
-  const can_app_config_t can_communication_config = {
-      .handle = &hcan,
-      .local_node = 1U,
-      .filter_bank = 0U,
-      .reassembly_timeout_ms = 100U,
+  const communication_transport_driver_t *transport =
+      can_app_driver(&can_transport_configuration);
+  const communication_config_t communication_configuration = {
+      .transport = transport,
+      .sensors = product_sensor_table,
+      .sensor_count = product_sensor_count,
   };
-  const communication_backend_t *backend =
-      can_app_backend(&can_communication_config);
 
   (void)argument;
-  if ((backend == NULL) ||
-      (communication_init(backend) != COMMUNICATION_STATUS_OK)) {
+  if (settings_store_init() != SETTINGS_STORE_STATUS_OK) {
     Error_Handler();
   }
-  if ((keyboard_init() != pdPASS) || (screen_init(NULL) != pdPASS)) {
+  if ((transport == NULL) ||
+      (communication_init(&communication_configuration) !=
+       COMMUNICATION_STATUS_OK)) {
+    Error_Handler();
+  }
+  if (monitor_app_init(PRODUCT_PRIMARY_SENSOR_ID) != pdPASS) {
     Error_Handler();
   }
 
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
+  /*
+   * 默认任务只负责系统初始化。初始化成功后释放自己的任务控制块和栈，
+   * 后续功能全部由各业务任务运行。
+   */
+  defaultTaskHandle = NULL;
+  vTaskDelete(NULL);
   /* USER CODE END StartDefaultTask */
 }
 

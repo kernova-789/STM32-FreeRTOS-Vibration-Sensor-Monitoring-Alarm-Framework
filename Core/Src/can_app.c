@@ -1,488 +1,335 @@
 #include "can_app.h"
 
-#include "FreeRTOS.h"
+#include "queue.h"
+#include "semphr.h"
 #include "string.h"
 #include "task.h"
 
-#define CAN_APP_RX_FIFO CAN_RX_FIFO0
-#define CAN_APP_RX_NOTIFICATION CAN_IT_RX_FIFO0_MSG_PENDING
-#define CAN_APP_REASSEMBLY_SLOTS 4U
-#define CAN_APP_DEFAULT_REASSEMBLY_TIMEOUT_MS 100U
-
-#define CAN_APP_CONTROL_START 0x80U
-#define CAN_APP_CONTROL_END 0x40U
-#define CAN_APP_CONTROL_SEQUENCE_MASK 0x3FU
+typedef struct {
+  communication_physical_address_t identifier;
+  uint8_t length;
+  uint8_t data[CAN_APP_MAX_DATA_LENGTH];
+} can_app_received_frame_t;
 
 typedef struct {
-  bool used;
-  uint8_t source;
-  uint16_t message_id;
-  uint8_t expected_sequence;
-  uint16_t received_length;
-  uint32_t last_activity_ms;
-  communication_message_t message;
-} can_app_reassembly_t;
-
-typedef struct {
-  can_app_config_t config;
-  communication_backend_receiver_t receiver;
-  can_app_reassembly_t slots[CAN_APP_REASSEMBLY_SLOTS];
-  uint16_t next_message_id;
+  can_app_config_t configuration;
+  communication_transport_driver_t driver;
+  communication_transport_receive_t receive_callback;
+  void *receive_callback_context;
+  QueueHandle_t receive_queue;
+  SemaphoreHandle_t transmit_mutex;
+  TaskHandle_t receive_task;
+  can_app_statistics_t statistics;
   bool configured;
   bool started;
-} can_app_context_t;
+} can_app_service_t;
 
-static can_app_context_t can_app_context = {0};
-static can_app_context_t *can_app_active_context = NULL;
+static can_app_service_t can_app_service;
 
-static communication_status_t
-can_app_start(void *context, const communication_backend_receiver_t *receiver);
+static communication_status_t can_app_start(
+    void *context, communication_transport_receive_t receive_callback,
+    void *callback_context);
 static void can_app_stop(void *context);
 static communication_status_t
-can_app_send(void *context, const communication_message_t *message,
+can_app_send(void *context,
+             communication_physical_address_t transmit_address,
+             const uint8_t *payload, size_t payload_size,
              TickType_t timeout_ticks);
+static communication_status_t can_app_configure_accept_all_filter(
+    const can_app_config_t *configuration);
+static void can_app_receive_task(void *argument);
+static void can_app_receive_pending(CAN_HandleTypeDef *handle,
+                                    uint32_t receive_fifo);
 static communication_status_t
-can_app_send_frame(can_app_context_t *context, uint32_t extended_id,
-                   const uint8_t *data, uint8_t length, TickType_t start_tick,
-                   TickType_t timeout_ticks);
-static void can_app_process_frame(can_app_context_t *context,
-                                  const CAN_RxHeaderTypeDef *header,
-                                  const uint8_t *data,
-                                  BaseType_t *higher_priority_task_woken);
-static void can_app_process_start_frame(can_app_context_t *context,
-                                        uint8_t source, uint16_t message_id,
-                                        uint8_t priority,
-                                        const CAN_RxHeaderTypeDef *header,
-                                        const uint8_t *data,
-                                        BaseType_t *higher_priority_task_woken);
-static void can_app_process_continuation_frame(
-    can_app_context_t *context, uint8_t source, uint16_t message_id,
-    const CAN_RxHeaderTypeDef *header, const uint8_t *data,
-    BaseType_t *higher_priority_task_woken);
-static can_app_reassembly_t *can_app_find_slot(can_app_context_t *context,
-                                               uint8_t source,
-                                               uint16_t message_id);
-static can_app_reassembly_t *can_app_allocate_slot(can_app_context_t *context,
-                                                   uint8_t source,
-                                                   uint16_t message_id);
-static void can_app_expire_slots(can_app_context_t *context);
-static void can_app_deliver(can_app_context_t *context,
-                            can_app_reassembly_t *slot,
-                            BaseType_t *higher_priority_task_woken);
+can_app_status_from_hal(HAL_StatusTypeDef status);
+static bool can_app_timeout_expired(TickType_t start_tick,
+                                    TickType_t timeout_ticks);
 
-static const communication_backend_ops_t can_app_ops = {
-    .start = can_app_start,
-    .stop = can_app_stop,
-    .send = can_app_send,
-};
-
-static communication_backend_t can_app_backend_instance = {
-    .ops = &can_app_ops,
-    .context = &can_app_context,
-};
-
-const communication_backend_t *can_app_backend(const can_app_config_t *config) {
-  if ((config == NULL) || (config->handle == NULL) ||
-      (config->local_node == CAN_APP_BROADCAST_NODE) ||
-      (config->filter_bank > 13U)) {
+const communication_transport_driver_t *
+can_app_driver(const can_app_config_t *configuration) {
+  if ((configuration == NULL) || (configuration->handle == NULL) ||
+      ((configuration->receive_fifo != CAN_RX_FIFO0) &&
+       (configuration->receive_fifo != CAN_RX_FIFO1)) ||
+      can_app_service.started) {
     return NULL;
   }
 
-  memset(&can_app_context, 0, sizeof(can_app_context));
-  can_app_context.config = *config;
-  if (can_app_context.config.reassembly_timeout_ms == 0U) {
-    can_app_context.config.reassembly_timeout_ms =
-        CAN_APP_DEFAULT_REASSEMBLY_TIMEOUT_MS;
-  }
-  can_app_context.configured = true;
-  return &can_app_backend_instance;
+  memset(&can_app_service, 0, sizeof(can_app_service));
+  can_app_service.configuration = *configuration;
+  can_app_service.driver.name = "bxCAN";
+  can_app_service.driver.context = &can_app_service;
+  can_app_service.driver.maximum_payload_size = CAN_APP_MAX_DATA_LENGTH;
+  can_app_service.driver.start = can_app_start;
+  can_app_service.driver.stop = can_app_stop;
+  can_app_service.driver.send = can_app_send;
+  can_app_service.configured = true;
+
+  return &can_app_service.driver;
 }
 
-static communication_status_t
-can_app_start(void *context, const communication_backend_receiver_t *receiver) {
-  can_app_context_t *can_context = (can_app_context_t *)context;
-  CAN_FilterTypeDef filter = {0};
+void can_app_get_statistics(can_app_statistics_t *statistics) {
+  if (statistics == NULL) {
+    return;
+  }
 
-  if ((can_context == NULL) || !can_context->configured ||
-      (can_context->config.handle == NULL) || (receiver == NULL) ||
-      (receiver->message_received_from_isr == NULL)) {
+  taskENTER_CRITICAL();
+  *statistics = can_app_service.statistics;
+  taskEXIT_CRITICAL();
+}
+
+static communication_status_t can_app_start(
+    void *context, communication_transport_receive_t receive_callback,
+    void *callback_context) {
+  can_app_service_t *service = (can_app_service_t *)context;
+  communication_status_t status;
+
+  if ((service != &can_app_service) || !service->configured ||
+      (receive_callback == NULL)) {
     return COMMUNICATION_STATUS_INVALID_ARGUMENT;
   }
-  if ((can_app_active_context != NULL) || can_context->started) {
-    return COMMUNICATION_STATUS_BUSY;
+  if (service->started) {
+    return COMMUNICATION_STATUS_ALREADY_INITIALIZED;
   }
 
-  /* Accept frames in hardware, then select destination and envelope format in
-   * software.  This leaves filter-bank policy out of application code. */
-  filter.FilterBank = can_context->config.filter_bank;
-  filter.FilterMode = CAN_FILTERMODE_IDMASK;
-  filter.FilterScale = CAN_FILTERSCALE_32BIT;
-  filter.FilterIdHigh = 0U;
-  filter.FilterIdLow = 0U;
-  filter.FilterMaskIdHigh = 0U;
-  filter.FilterMaskIdLow = 0U;
-  filter.FilterFIFOAssignment = CAN_APP_RX_FIFO;
-  filter.FilterActivation = ENABLE;
-  filter.SlaveStartFilterBank = 14U;
-
-  if (HAL_CAN_ConfigFilter(can_context->config.handle, &filter) != HAL_OK) {
-    return COMMUNICATION_STATUS_IO_ERROR;
-  }
-  if (HAL_CAN_Start(can_context->config.handle) != HAL_OK) {
-    return COMMUNICATION_STATUS_IO_ERROR;
+  service->receive_callback = receive_callback;
+  service->receive_callback_context = callback_context;
+  service->receive_queue =
+      xQueueCreate(CAN_APP_RX_QUEUE_LENGTH, sizeof(can_app_received_frame_t));
+  service->transmit_mutex = xSemaphoreCreateMutex();
+  if ((service->receive_queue == NULL) || (service->transmit_mutex == NULL)) {
+    if (service->receive_queue != NULL) {
+      vQueueDelete(service->receive_queue);
+    }
+    if (service->transmit_mutex != NULL) {
+      vSemaphoreDelete(service->transmit_mutex);
+    }
+    service->receive_queue = NULL;
+    service->transmit_mutex = NULL;
+    return COMMUNICATION_STATUS_NO_MEMORY;
   }
 
-  can_context->receiver = *receiver;
-  can_context->started = true;
-  can_app_active_context = can_context;
+  if (xTaskCreate(can_app_receive_task, "can_rx",
+                  CAN_APP_RX_TASK_STACK_DEPTH, service,
+                  CAN_APP_RX_TASK_PRIORITY, &service->receive_task) != pdPASS) {
+    vQueueDelete(service->receive_queue);
+    vSemaphoreDelete(service->transmit_mutex);
+    service->receive_queue = NULL;
+    service->transmit_mutex = NULL;
+    return COMMUNICATION_STATUS_NO_MEMORY;
+  }
 
-  if (HAL_CAN_ActivateNotification(can_context->config.handle,
-                                   CAN_APP_RX_NOTIFICATION) != HAL_OK) {
-    can_app_active_context = NULL;
-    can_context->started = false;
-    memset(&can_context->receiver, 0, sizeof(can_context->receiver));
-    (void)HAL_CAN_Stop(can_context->config.handle);
-    return COMMUNICATION_STATUS_IO_ERROR;
+  status = can_app_configure_accept_all_filter(&service->configuration);
+  if (status != COMMUNICATION_STATUS_OK) {
+    can_app_stop(service);
+    return status;
+  }
+
+  status = can_app_status_from_hal(HAL_CAN_Start(service->configuration.handle));
+  if (status != COMMUNICATION_STATUS_OK) {
+    can_app_stop(service);
+    return status;
+  }
+
+  service->started = true;
+  if (HAL_CAN_ActivateNotification(
+          service->configuration.handle,
+          (service->configuration.receive_fifo == CAN_RX_FIFO0)
+              ? CAN_IT_RX_FIFO0_MSG_PENDING
+              : CAN_IT_RX_FIFO1_MSG_PENDING) != HAL_OK) {
+    can_app_stop(service);
+    return COMMUNICATION_STATUS_TRANSPORT_ERROR;
   }
 
   return COMMUNICATION_STATUS_OK;
 }
 
 static void can_app_stop(void *context) {
-  can_app_context_t *can_context = (can_app_context_t *)context;
+  can_app_service_t *service = (can_app_service_t *)context;
 
-  if ((can_context == NULL) || !can_context->started) {
+  if ((service != &can_app_service) || !service->configured) {
     return;
   }
 
-  (void)HAL_CAN_DeactivateNotification(can_context->config.handle,
-                                       CAN_APP_RX_NOTIFICATION);
-  (void)HAL_CAN_Stop(can_context->config.handle);
-  can_app_active_context = NULL;
-  can_context->started = false;
-  memset(&can_context->receiver, 0, sizeof(can_context->receiver));
-  memset(can_context->slots, 0, sizeof(can_context->slots));
+  if (service->started) {
+    (void)HAL_CAN_DeactivateNotification(
+        service->configuration.handle,
+        (service->configuration.receive_fifo == CAN_RX_FIFO0)
+            ? CAN_IT_RX_FIFO0_MSG_PENDING
+            : CAN_IT_RX_FIFO1_MSG_PENDING);
+    (void)HAL_CAN_Stop(service->configuration.handle);
+  }
+  service->started = false;
+
+  if (service->receive_task != NULL) {
+    vTaskDelete(service->receive_task);
+    service->receive_task = NULL;
+  }
+  if (service->receive_queue != NULL) {
+    vQueueDelete(service->receive_queue);
+    service->receive_queue = NULL;
+  }
+  if (service->transmit_mutex != NULL) {
+    vSemaphoreDelete(service->transmit_mutex);
+    service->transmit_mutex = NULL;
+  }
+  service->receive_callback = NULL;
+  service->receive_callback_context = NULL;
 }
 
 static communication_status_t
-can_app_send(void *context, const communication_message_t *message,
+can_app_send(void *context,
+             communication_physical_address_t transmit_address,
+             const uint8_t *payload, size_t payload_size,
              TickType_t timeout_ticks) {
-  can_app_context_t *can_context = (can_app_context_t *)context;
-  uint32_t extended_id;
-  uint16_t message_id;
-  uint16_t payload_offset = 0U;
-  uint8_t sequence = 0U;
-  uint8_t frame[8] = {0};
-  uint8_t frame_length;
+  can_app_service_t *service = (can_app_service_t *)context;
+  CAN_TxHeaderTypeDef header = {0};
+  uint8_t data[CAN_APP_MAX_DATA_LENGTH] = {0};
+  uint32_t mailbox = 0U;
   TickType_t start_tick;
-  communication_status_t status;
+  HAL_StatusTypeDef hal_status;
 
-  if ((can_context == NULL) || !can_context->started || (message == NULL)) {
-    return COMMUNICATION_STATUS_NOT_INITIALIZED;
-  }
-  if (message->peer > UINT8_MAX) {
+  if ((service != &can_app_service) || !service->started ||
+      (payload == NULL) || (payload_size == 0U) ||
+      (payload_size > CAN_APP_MAX_DATA_LENGTH) ||
+      (transmit_address > UINT32_C(0x7FF))) {
     return COMMUNICATION_STATUS_INVALID_ARGUMENT;
   }
 
-  message_id = can_context->next_message_id & 0x03FFU;
-  can_context->next_message_id = (message_id + 1U) & 0x03FFU;
-
-  /* 29-bit identifier: priority[28:26], source[25:18], destination[17:10],
-   * message-id[9:0]. */
-  extended_id = ((uint32_t)(message->priority & 0x07U) << 26U) |
-                ((uint32_t)can_context->config.local_node << 18U) |
-                ((uint32_t)message->peer << 10U) | message_id;
-
-  frame[0] = CAN_APP_CONTROL_START;
-  frame[1] = (uint8_t)message->operation;
-  frame[2] = (uint8_t)(message->endpoint >> 8U);
-  frame[3] = (uint8_t)message->endpoint;
-  frame[4] = (uint8_t)(message->transaction >> 8U);
-  frame[5] = (uint8_t)message->transaction;
-  frame[6] = (uint8_t)message->payload_length;
-  frame_length = 7U;
-
-  if (message->payload_length > 0U) {
-    frame[7] = message->payload[0];
-    payload_offset = 1U;
-    frame_length = 8U;
+  if (xSemaphoreTake(service->transmit_mutex, timeout_ticks) != pdPASS) {
+    return (timeout_ticks == 0U) ? COMMUNICATION_STATUS_BUSY
+                                 : COMMUNICATION_STATUS_TIMEOUT;
   }
-  if (payload_offset == message->payload_length) {
-    frame[0] |= CAN_APP_CONTROL_END;
-  }
+
+  header.StdId = transmit_address;
+  header.ExtId = 0U;
+  header.IDE = CAN_ID_STD;
+  header.RTR = CAN_RTR_DATA;
+  header.DLC = (uint32_t)payload_size;
+  header.TransmitGlobalTime = DISABLE;
+  memcpy(data, payload, payload_size);
 
   start_tick = xTaskGetTickCount();
-  status = can_app_send_frame(can_context, extended_id, frame, frame_length,
-                              start_tick, timeout_ticks);
-  if (status != COMMUNICATION_STATUS_OK) {
-    return status;
-  }
-
-  while (payload_offset < message->payload_length) {
-    uint16_t remaining = message->payload_length - payload_offset;
-    uint8_t chunk = (remaining > 7U) ? 7U : (uint8_t)remaining;
-
-    ++sequence;
-    frame[0] = sequence & CAN_APP_CONTROL_SEQUENCE_MASK;
-    if (chunk == remaining) {
-      frame[0] |= CAN_APP_CONTROL_END;
-    }
-    memcpy(&frame[1], &message->payload[payload_offset], chunk);
-    frame_length = chunk + 1U;
-
-    status = can_app_send_frame(can_context, extended_id, frame, frame_length,
-                                start_tick, timeout_ticks);
-    if (status != COMMUNICATION_STATUS_OK) {
-      return status;
-    }
-    payload_offset += chunk;
-  }
-
-  return COMMUNICATION_STATUS_OK;
-}
-
-static communication_status_t
-can_app_send_frame(can_app_context_t *context, uint32_t extended_id,
-                   const uint8_t *data, uint8_t length, TickType_t start_tick,
-                   TickType_t timeout_ticks) {
-  CAN_TxHeaderTypeDef header = {0};
-  uint32_t mailbox;
-
-  header.ExtId = extended_id;
-  header.IDE = CAN_ID_EXT;
-  header.RTR = CAN_RTR_DATA;
-  header.DLC = length;
-  header.TransmitGlobalTime = DISABLE;
-
-  for (;;) {
-    HAL_StatusTypeDef hal_status;
-
-    if (HAL_CAN_GetTxMailboxesFreeLevel(context->config.handle) > 0U) {
-      hal_status = HAL_CAN_AddTxMessage(context->config.handle, &header,
-                                        (uint8_t *)data, &mailbox);
-      if (hal_status == HAL_OK) {
-        return COMMUNICATION_STATUS_OK;
-      }
-      if (hal_status != HAL_BUSY) {
-        return COMMUNICATION_STATUS_IO_ERROR;
-      }
-    }
-
-    if (timeout_ticks == 0U) {
-      return COMMUNICATION_STATUS_BUSY;
-    }
-    if ((timeout_ticks != portMAX_DELAY) &&
-        ((xTaskGetTickCount() - start_tick) >= timeout_ticks)) {
-      return COMMUNICATION_STATUS_TIMEOUT;
-    }
-    if (xTaskGetSchedulerState() != taskSCHEDULER_RUNNING) {
-      return COMMUNICATION_STATUS_BUSY;
+  while (HAL_CAN_GetTxMailboxesFreeLevel(service->configuration.handle) == 0U) {
+    if ((timeout_ticks == 0U) ||
+        can_app_timeout_expired(start_tick, timeout_ticks)) {
+      xSemaphoreGive(service->transmit_mutex);
+      ++service->statistics.transmit_failures;
+      return (timeout_ticks == 0U) ? COMMUNICATION_STATUS_BUSY
+                                   : COMMUNICATION_STATUS_TIMEOUT;
     }
     vTaskDelay(1U);
+  }
+
+  hal_status = HAL_CAN_AddTxMessage(service->configuration.handle, &header,
+                                   data, &mailbox);
+  xSemaphoreGive(service->transmit_mutex);
+
+  if (hal_status == HAL_OK) {
+    ++service->statistics.transmitted_frames;
+  } else {
+    ++service->statistics.transmit_failures;
+  }
+  return can_app_status_from_hal(hal_status);
+}
+
+static communication_status_t can_app_configure_accept_all_filter(
+    const can_app_config_t *configuration) {
+  CAN_FilterTypeDef filter = {0};
+
+  filter.FilterIdHigh = 0U;
+  filter.FilterIdLow = 0U;
+  filter.FilterMaskIdHigh = 0U;
+  filter.FilterMaskIdLow = 0U;
+  filter.FilterFIFOAssignment = configuration->receive_fifo;
+  filter.FilterBank = configuration->filter_bank;
+  filter.FilterMode = CAN_FILTERMODE_IDMASK;
+  filter.FilterScale = CAN_FILTERSCALE_32BIT;
+  filter.FilterActivation = ENABLE;
+  filter.SlaveStartFilterBank = 14U;
+
+  return can_app_status_from_hal(
+      HAL_CAN_ConfigFilter(configuration->handle, &filter));
+}
+
+static void can_app_receive_task(void *argument) {
+  can_app_service_t *service = (can_app_service_t *)argument;
+  can_app_received_frame_t frame;
+
+  for (;;) {
+    if (xQueueReceive(service->receive_queue, &frame, portMAX_DELAY) != pdPASS) {
+      continue;
+    }
+    if (service->receive_callback != NULL) {
+      (void)service->receive_callback(
+          service->receive_callback_context, frame.identifier, frame.data,
+          frame.length);
+    }
   }
 }
 
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *handle) {
-  can_app_context_t *context = can_app_active_context;
+  can_app_receive_pending(handle, CAN_RX_FIFO0);
+}
+
+void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *handle) {
+  can_app_receive_pending(handle, CAN_RX_FIFO1);
+}
+
+static void can_app_receive_pending(CAN_HandleTypeDef *handle,
+                                    uint32_t receive_fifo) {
+  can_app_received_frame_t frame;
+  CAN_RxHeaderTypeDef header;
   BaseType_t higher_priority_task_woken = pdFALSE;
 
-  if ((context == NULL) || (handle != context->config.handle)) {
+  if (!can_app_service.started ||
+      (handle != can_app_service.configuration.handle) ||
+      (can_app_service.configuration.receive_fifo != receive_fifo)) {
     return;
   }
 
-  while (HAL_CAN_GetRxFifoFillLevel(handle, CAN_APP_RX_FIFO) > 0U) {
-    CAN_RxHeaderTypeDef header;
-    uint8_t data[8] = {0};
+  while (HAL_CAN_GetRxFifoFillLevel(handle, receive_fifo) > 0U) {
+    memset(&frame, 0, sizeof(frame));
+    memset(&header, 0, sizeof(header));
 
-    if (HAL_CAN_GetRxMessage(handle, CAN_APP_RX_FIFO, &header, data) !=
+    if (HAL_CAN_GetRxMessage(handle, receive_fifo, &header, frame.data) !=
         HAL_OK) {
+      ++can_app_service.statistics.discarded_frames;
       break;
     }
-    can_app_process_frame(context, &header, data, &higher_priority_task_woken);
+    if ((header.IDE != CAN_ID_STD) || (header.RTR != CAN_RTR_DATA) ||
+        (header.DLC == 0U) || (header.DLC > CAN_APP_MAX_DATA_LENGTH)) {
+      ++can_app_service.statistics.discarded_frames;
+      continue;
+    }
+
+    frame.identifier = header.StdId;
+    frame.length = (uint8_t)header.DLC;
+    if (xQueueSendFromISR(can_app_service.receive_queue, &frame,
+                          &higher_priority_task_woken) != pdPASS) {
+      ++can_app_service.statistics.receive_queue_overflows;
+    } else {
+      ++can_app_service.statistics.received_frames;
+    }
   }
 
   portYIELD_FROM_ISR(higher_priority_task_woken);
 }
 
-static void can_app_process_frame(can_app_context_t *context,
-                                  const CAN_RxHeaderTypeDef *header,
-                                  const uint8_t *data,
-                                  BaseType_t *higher_priority_task_woken) {
-  uint8_t source;
-  uint8_t destination;
-  uint8_t priority;
-  uint16_t message_id;
-
-  if ((header->IDE != CAN_ID_EXT) || (header->RTR != CAN_RTR_DATA) ||
-      (header->DLC == 0U)) {
-    return;
-  }
-
-  priority = (uint8_t)((header->ExtId >> 26U) & 0x07U);
-  source = (uint8_t)((header->ExtId >> 18U) & 0xFFU);
-  destination = (uint8_t)((header->ExtId >> 10U) & 0xFFU);
-  message_id = (uint16_t)(header->ExtId & 0x03FFU);
-
-  if ((destination != context->config.local_node) &&
-      (destination != CAN_APP_BROADCAST_NODE)) {
-    return;
-  }
-
-  can_app_expire_slots(context);
-  if ((data[0] & CAN_APP_CONTROL_START) != 0U) {
-    can_app_process_start_frame(context, source, message_id, priority, header,
-                                data, higher_priority_task_woken);
-  } else {
-    can_app_process_continuation_frame(context, source, message_id, header,
-                                       data, higher_priority_task_woken);
+static communication_status_t
+can_app_status_from_hal(HAL_StatusTypeDef status) {
+  switch (status) {
+  case HAL_OK:
+    return COMMUNICATION_STATUS_OK;
+  case HAL_BUSY:
+    return COMMUNICATION_STATUS_BUSY;
+  case HAL_TIMEOUT:
+    return COMMUNICATION_STATUS_TIMEOUT;
+  default:
+    return COMMUNICATION_STATUS_TRANSPORT_ERROR;
   }
 }
 
-static void can_app_process_start_frame(
-    can_app_context_t *context, uint8_t source, uint16_t message_id,
-    uint8_t priority, const CAN_RxHeaderTypeDef *header, const uint8_t *data,
-    BaseType_t *higher_priority_task_woken) {
-  can_app_reassembly_t *slot;
-  uint16_t total_length;
-  uint16_t first_length;
-  bool end;
-
-  if ((header->DLC < 7U) || ((data[0] & CAN_APP_CONTROL_SEQUENCE_MASK) != 0U) ||
-      (data[1] >= (uint8_t)COMMUNICATION_OPERATION_COUNT)) {
-    return;
-  }
-
-  total_length = data[6];
-  first_length = (uint16_t)(header->DLC - 7U);
-  end = (data[0] & CAN_APP_CONTROL_END) != 0U;
-  if ((total_length > COMMUNICATION_MAX_PAYLOAD_SIZE) ||
-      (first_length > total_length) ||
-      (end && (first_length != total_length)) ||
-      (!end && (first_length == total_length))) {
-    return;
-  }
-
-  slot = can_app_allocate_slot(context, source, message_id);
-  if (slot == NULL) {
-    return;
-  }
-
-  slot->message.peer = source;
-  slot->message.priority = priority;
-  slot->message.operation = (communication_operation_t)data[1];
-  slot->message.endpoint =
-      (uint16_t)(((uint16_t)data[2] << 8U) | (uint16_t)data[3]);
-  slot->message.transaction =
-      (uint16_t)(((uint16_t)data[4] << 8U) | (uint16_t)data[5]);
-  slot->message.payload_length = total_length;
-  if (first_length > 0U) {
-    memcpy(slot->message.payload, &data[7], first_length);
-  }
-  slot->received_length = first_length;
-  slot->expected_sequence = 1U;
-  slot->last_activity_ms = HAL_GetTick();
-
-  if (end) {
-    can_app_deliver(context, slot, higher_priority_task_woken);
-  }
-}
-
-static void can_app_process_continuation_frame(
-    can_app_context_t *context, uint8_t source, uint16_t message_id,
-    const CAN_RxHeaderTypeDef *header, const uint8_t *data,
-    BaseType_t *higher_priority_task_woken) {
-  can_app_reassembly_t *slot = can_app_find_slot(context, source, message_id);
-  uint8_t sequence = data[0] & CAN_APP_CONTROL_SEQUENCE_MASK;
-  uint16_t chunk_length;
-  uint16_t remaining;
-  bool end = (data[0] & CAN_APP_CONTROL_END) != 0U;
-
-  if ((slot == NULL) || (header->DLC < 2U) ||
-      (sequence != slot->expected_sequence)) {
-    if (slot != NULL) {
-      slot->used = false;
-    }
-    return;
-  }
-
-  chunk_length = (uint16_t)(header->DLC - 1U);
-  remaining = slot->message.payload_length - slot->received_length;
-  if ((chunk_length > remaining) || (end && (chunk_length != remaining)) ||
-      (!end && (chunk_length == remaining))) {
-    slot->used = false;
-    return;
-  }
-
-  memcpy(&slot->message.payload[slot->received_length], &data[1], chunk_length);
-  slot->received_length += chunk_length;
-  ++slot->expected_sequence;
-  slot->last_activity_ms = HAL_GetTick();
-
-  if (end) {
-    can_app_deliver(context, slot, higher_priority_task_woken);
-  }
-}
-
-static can_app_reassembly_t *can_app_find_slot(can_app_context_t *context,
-                                               uint8_t source,
-                                               uint16_t message_id) {
-  uint32_t index;
-
-  for (index = 0U; index < CAN_APP_REASSEMBLY_SLOTS; ++index) {
-    can_app_reassembly_t *slot = &context->slots[index];
-    if (slot->used && (slot->source == source) &&
-        (slot->message_id == message_id)) {
-      return slot;
-    }
-  }
-  return NULL;
-}
-
-static can_app_reassembly_t *can_app_allocate_slot(can_app_context_t *context,
-                                                   uint8_t source,
-                                                   uint16_t message_id) {
-  can_app_reassembly_t *slot = can_app_find_slot(context, source, message_id);
-  uint32_t index;
-
-  if (slot == NULL) {
-    for (index = 0U; index < CAN_APP_REASSEMBLY_SLOTS; ++index) {
-      if (!context->slots[index].used) {
-        slot = &context->slots[index];
-        break;
-      }
-    }
-  }
-  if (slot == NULL) {
-    return NULL;
-  }
-
-  memset(slot, 0, sizeof(*slot));
-  slot->used = true;
-  slot->source = source;
-  slot->message_id = message_id;
-  return slot;
-}
-
-static void can_app_expire_slots(can_app_context_t *context) {
-  uint32_t now = HAL_GetTick();
-  uint32_t index;
-
-  for (index = 0U; index < CAN_APP_REASSEMBLY_SLOTS; ++index) {
-    can_app_reassembly_t *slot = &context->slots[index];
-    if (slot->used && ((now - slot->last_activity_ms) >=
-                       context->config.reassembly_timeout_ms)) {
-      slot->used = false;
-    }
-  }
-}
-
-static void can_app_deliver(can_app_context_t *context,
-                            can_app_reassembly_t *slot,
-                            BaseType_t *higher_priority_task_woken) {
-  if ((slot->received_length == slot->message.payload_length) &&
-      (context->receiver.message_received_from_isr != NULL)) {
-    (void)context->receiver.message_received_from_isr(
-        context->receiver.context, &slot->message, higher_priority_task_woken);
-  }
-  slot->used = false;
+static bool can_app_timeout_expired(TickType_t start_tick,
+                                    TickType_t timeout_ticks) {
+  return (xTaskGetTickCount() - start_tick) >= timeout_ticks;
 }

@@ -11,7 +11,7 @@ _Static_assert(INDICATOR_DEVICE_COUNT <= 32U,
 
 #define INDICATOR_QUEUE_LENGTH 10U
 #define INDICATOR_TASK_STACK_DEPTH 64U
-#define INDICATOR_TASK_PRIORITY 6U
+#define INDICATOR_TASK_PRIORITY (tskIDLE_PRIORITY + 4U)
 
 #define INDICATOR_VALID_MASK                                                   \
   ((UINT32_C(1) << INDICATOR_DEVICE_COUNT) - UINT32_C(1))
@@ -169,6 +169,8 @@ indicator_set_device_from_isr(indicator_device_t device_id, bool target_state,
 static void indicator_task(void *arg) {
   struct indicator_msg_t indicator_order;
   TickType_t previous_tick = xTaskGetTickCount();
+
+  (void)arg;
   while (1) {
     /* 没有定时设备时为portMAX_DELAY,有定时设备时为最近的到期时间 */
     TickType_t wait_ticks = indicator_get_next_timeout();

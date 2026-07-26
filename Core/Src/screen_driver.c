@@ -16,7 +16,7 @@ typedef struct {
   uint8_t columns[SCREEN_DRIVER_GLYPH_WIDTH];
 } screen_glyph_t;
 
-/* Columns are stored least-significant bit at the top of the character. */
+/* 每列字模的最低位对应字符顶部像素。 */
 static const screen_glyph_t screen_font[] = {
     {' ', {0x00, 0x00, 0x00, 0x00, 0x00}},
     {'(', {0x00, 0x1C, 0x22, 0x41, 0x00}},
@@ -76,19 +76,18 @@ static void screen_driver_delay(uint32_t milliseconds);
 HAL_StatusTypeDef screen_driver_init(screen_driver_t *driver,
                                      const screen_driver_config_t *config) {
   static const uint8_t initialization_commands[] = {
-      0x29U, /* power control: voltage converter */
-      0x2BU, /* power control: converter + regulator */
-      0x2FU, /* power control: converter + regulator + follower */
-      0x24U, /* resistor ratio */
-      0x81U, /* electronic volume command */
-      0x20U, /* electronic volume value */
-      0xA2U, /* bias 1/9 */
-      0xA0U, /* segment direction */
-      0xC8U, /* COM direction */
-      0xAFU, /* display on */
-      0xA4U, /* normal RAM display */
+      0x29U, /* 电源控制：电压转换器 */
+      0x2BU, /* 电源控制：转换器和稳压器 */
+      0x2FU, /* 电源控制：转换器、稳压器和跟随器 */
+      0x24U, /* 电阻比 */
+      0x81U, /* 电子音量命令 */
+      0x20U, /* 电子音量值 */
+      0xA2U, /* 1/9 偏压 */
+      0xA0U, /* 段扫描方向 */
+      0xC8U, /* COM 扫描方向 */
+      0xAFU, /* 开启显示 */
+      0xA4U, /* 正常显示显存内容 */
   };
-  // uint32_t command_index;
 
   if ((driver == NULL) || (config == NULL) || (config->spi == NULL) ||
       (config->chip_select_port == NULL) ||
@@ -104,7 +103,7 @@ HAL_StatusTypeDef screen_driver_init(screen_driver_t *driver,
   screen_driver_delay(100U);
   HAL_GPIO_WritePin(config->reset_port, config->reset_pin, GPIO_PIN_SET);
   screen_driver_delay(100U);
-  /* 屏幕reset */
+  /* 通过硬件引脚复位屏幕控制器。 */
   if (screen_driver_command(driver, 0xE2U) != HAL_OK) {
     return HAL_ERROR;
   }
@@ -294,7 +293,7 @@ static const uint8_t *screen_driver_find_glyph(char character) {
     }
   }
 
-  /* '?' is entry 17 and is the fallback for unsupported characters. */
+  /* 字符 '?' 位于字模表第 17 项，用作不支持字符的替代字形。 */
   return screen_font[17].columns;
 }
 
@@ -302,8 +301,8 @@ static uint16_t screen_driver_expand_glyph_column(uint8_t column) {
   uint16_t expanded = 0U;
 
   /*
-   * Duplicate each of the seven source pixels vertically and leave one blank
-   * pixel at the top and bottom: 1 + (7 * 2) + 1 = 16 pixels.
+   * 将原字模每列的七个像素分别纵向复制一倍，并在上下各留一个空像素：
+   * 1 + (7 * 2) + 1 = 16 像素。
    */
   for (uint8_t source_row = 0U; source_row < 7U; ++source_row) {
     if ((column & (uint8_t)(1U << source_row)) != 0U) {

@@ -1,0 +1,18 @@
+#pragma once
+
+#include "stdint.h"
+
+/*
+ * STM32F103CB 的 Flash 页大小为 1 KiB。
+ *
+ * 0x0801F400..0x0801FBFF：settings_store 管理的两个配置页；
+ * 0x0801FC00..0x0801FFFF：独立的 Bootloader OTA 请求页。
+ *
+ * 应用程序链接区必须结束在 SETTINGS_STORE_PAGE0_ADDRESS。
+ */
+#define SETTINGS_STORE_PAGE_SIZE UINT32_C(0x400)
+#define SETTINGS_STORE_PAGE0_ADDRESS UINT32_C(0x0801F400)
+#define SETTINGS_STORE_PAGE1_ADDRESS UINT32_C(0x0801F800)
+
+#define SETTINGS_STORE_MAX_VALUE_SIZE 128U
+#define SETTINGS_STORE_MAX_KEY_COUNT 16U

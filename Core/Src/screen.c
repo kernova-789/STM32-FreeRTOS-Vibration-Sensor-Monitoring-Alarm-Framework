@@ -245,9 +245,8 @@ static void screen_task(void *argument) {
     TickType_t current_time;
 
     /*
-     * Clear notifications belonging to events already queued before polling
-     * those queues. A new notification arriving afterwards remains available
-     * to wake the task if this iteration turns the display off.
+     * 轮询队列前先清除与队列中已有事件对应的旧通知。
+     * 此后到达的新通知会继续保留；若本轮关闭屏幕，它仍能唤醒屏幕任务。
      */
     (void)xTaskNotifyWait(0U, UINT32_MAX, &ignored_notifications, 0U);
     screen_process_inputs();
@@ -277,11 +276,15 @@ static void screen_normalize_settings(screen_settings_t *settings) {
   uint8_t axis;
 
   for (axis = 0U; axis < SCREEN_AXIS_COUNT; ++axis) {
-    if (settings->min_centi_g[axis] > SCREEN_VALUE_MAX) {
-      settings->min_centi_g[axis] = SCREEN_VALUE_MAX;
+    if (settings->min_centi_g[axis] >
+        SCREEN_ACCELERATION_MAX_CENTI_G) {
+      settings->min_centi_g[axis] =
+          SCREEN_ACCELERATION_MAX_CENTI_G;
     }
-    if (settings->max_centi_g[axis] > SCREEN_VALUE_MAX) {
-      settings->max_centi_g[axis] = SCREEN_VALUE_MAX;
+    if (settings->max_centi_g[axis] >
+        SCREEN_ACCELERATION_MAX_CENTI_G) {
+      settings->max_centi_g[axis] =
+          SCREEN_ACCELERATION_MAX_CENTI_G;
     }
     if (settings->max_centi_g[axis] < settings->min_centi_g[axis]) {
       settings->max_centi_g[axis] = settings->min_centi_g[axis];
@@ -359,7 +362,7 @@ static void screen_process_power_requests(void) {
 
 static void screen_check_auto_off(TickType_t current_time) {
   TickType_t timeout_ticks;
-  uint32_t timeout_ms;
+  uint32_t timeout_seconds;
 
   if (!screen_service.driver.display_enabled ||
       !screen_service.committed_settings.auto_off.enabled) {
@@ -370,10 +373,10 @@ static void screen_check_auto_off(TickType_t current_time) {
     return;
   }
 
-  timeout_ms =
-      (uint32_t)screen_service.committed_settings.auto_off.timeout_seconds *
-      1000U;
-  timeout_ticks = pdMS_TO_TICKS(timeout_ms);
+  timeout_seconds =
+      (uint32_t)screen_service.committed_settings.auto_off.timeout_seconds;
+  timeout_ticks =
+      (TickType_t)(timeout_seconds * (uint32_t)configTICK_RATE_HZ);
   if (timeout_ticks == 0U) {
     timeout_ticks = 1U;
   }
@@ -388,8 +391,8 @@ static void screen_wait_while_off(void) {
 
   while (!screen_service.driver.display_enabled) {
     /*
-     * Check the queue before blocking. If a request arrives after this check,
-     * its task notification wakes us, so no periodic polling is required.
+     * 阻塞前先检查一次队列。若请求恰好在检查后到达，
+     * 对应的任务通知会负责唤醒，因此不需要周期轮询。
      */
     screen_process_power_requests();
     if (screen_service.driver.display_enabled) {
@@ -563,7 +566,8 @@ static void screen_adjust_limit(keyboard_key_t key) {
   if (is_maximum) {
     screen_service.draft_settings.max_centi_g[axis] = screen_adjust_value(
         screen_service.draft_settings.max_centi_g[axis], step, increase,
-        screen_service.draft_settings.min_centi_g[axis], SCREEN_VALUE_MAX);
+        screen_service.draft_settings.min_centi_g[axis],
+        SCREEN_ACCELERATION_MAX_CENTI_G);
   } else {
     screen_service.draft_settings.min_centi_g[axis] = screen_adjust_value(
         screen_service.draft_settings.min_centi_g[axis], step, increase, 0U,

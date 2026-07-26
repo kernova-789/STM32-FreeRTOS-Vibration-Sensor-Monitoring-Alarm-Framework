@@ -1,122 +1,163 @@
 #pragma once
 
 #include "FreeRTOS.h"
+#include "projdefs.h"
 #include "stdbool.h"
 #include "stdint.h"
+#include "task.h"
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define COMMUNICATION_MAX_SENSOR_COUNT 8U
+#define COMMUNICATION_EVENT_DATA_CAPACITY 16U
+#define COMMUNICATION_EVENT_QUEUE_LENGTH 16U
+
+#define COMMUNICATION_SENSOR_ID_INVALID ((communication_sensor_id_t)0U)
 
 /*
- * Protocol-independent application message size.
- *
- * Keeping this value modest is important on an STM32F103 because messages are
- * copied into a FreeRTOS queue.  A backend may impose a smaller limit.
+ * 高 16 位标识传感器驱动类别，低 16 位标识该类别中的命令或事件。
+ * 不同传感器驱动可独立分配低位编号，不会意外使用相同的完整编号。
  */
-#define COMMUNICATION_MAX_PAYLOAD_SIZE 64U
+#define COMMUNICATION_CODE(driver_class, number)                               \
+  ((((uint32_t)(driver_class)) << 16U) | ((uint32_t)(number) & UINT32_C(0xFFFF)))
+#define COMMUNICATION_CODE_CLASS(code) ((uint16_t)((uint32_t)(code) >> 16U))
+#define COMMUNICATION_CODE_NUMBER(code) ((uint16_t)((uint32_t)(code)))
+
+typedef uint16_t communication_sensor_id_t;
+typedef uint32_t communication_physical_address_t;
+typedef uint32_t communication_ioctl_command_t;
+typedef uint32_t communication_event_type_t;
 
 typedef enum {
   COMMUNICATION_STATUS_OK = 0,
   COMMUNICATION_STATUS_INVALID_ARGUMENT,
   COMMUNICATION_STATUS_NOT_INITIALIZED,
   COMMUNICATION_STATUS_ALREADY_INITIALIZED,
+  COMMUNICATION_STATUS_NOT_FOUND,
+  COMMUNICATION_STATUS_UNSUPPORTED,
   COMMUNICATION_STATUS_BUSY,
   COMMUNICATION_STATUS_TIMEOUT,
   COMMUNICATION_STATUS_QUEUE_FULL,
+  COMMUNICATION_STATUS_TRANSPORT_ERROR,
+  COMMUNICATION_STATUS_DRIVER_ERROR,
   COMMUNICATION_STATUS_NO_MEMORY,
-  COMMUNICATION_STATUS_IO_ERROR,
-  COMMUNICATION_STATUS_PROTOCOL_ERROR,
-  COMMUNICATION_STATUS_UNSUPPORTED,
 } communication_status_t;
 
+typedef struct {
+  communication_sensor_id_t sensor_id;
+  communication_event_type_t type;
+  TickType_t timestamp_ticks;
+  uint8_t data_size;
+  uint8_t data[COMMUNICATION_EVENT_DATA_CAPACITY];
+} communication_event_t;
+
+typedef struct communication_device communication_device_t;
+
 /*
- * These operations describe application intent, not a CAN frame type or a
- * Modbus function code.  Each backend maps them to its own wire format.
+ * 传感器驱动负责设备特有的报文格式：
+ * ioctl() 把带类型的应用命令转换为总线报文，
+ * on_receive() 把总线报文转换为带类型的通信事件。
  */
-typedef enum {
-  COMMUNICATION_OPERATION_READ_REQUEST = 0,
-  COMMUNICATION_OPERATION_WRITE_REQUEST,
-  COMMUNICATION_OPERATION_READ_RESPONSE,
-  COMMUNICATION_OPERATION_WRITE_RESPONSE,
-  COMMUNICATION_OPERATION_EVENT,
-  COMMUNICATION_OPERATION_ERROR_RESPONSE,
-
-  COMMUNICATION_OPERATION_COUNT,
-} communication_operation_t;
+typedef struct {
+  const char *name;
+  communication_status_t (*init)(communication_device_t *device);
+  void (*deinit)(communication_device_t *device);
+  communication_status_t (*ioctl)(communication_device_t *device,
+                                  communication_ioctl_command_t command,
+                                  const void *argument, size_t argument_size,
+                                  TickType_t timeout_ticks);
+  communication_status_t (*on_receive)(communication_device_t *device,
+                                       const uint8_t *payload,
+                                       size_t payload_size);
+} communication_sensor_driver_t;
 
 typedef struct {
-  /* Remote logical node.  Modbus additionally uses 0 for broadcast writes. */
-  uint16_t peer;
+  /* 应用层和持久化配置共同使用的稳定逻辑 ID。 */
+  communication_sensor_id_t sensor_id;
 
-  /* 0 is the highest priority.  Backends without priorities ignore it. */
-  uint8_t priority;
-  communication_operation_t operation;
+  /*
+   * 物理地址由当前传输层解释：
+   * - CAN：11 位标准帧 ID；
+   * - Modbus RTU：范围为 1..247 的从站地址。
+   */
+  communication_physical_address_t receive_address;
+  communication_physical_address_t transmit_address;
 
-  /* Protocol-neutral object/register/service address. */
-  uint16_t endpoint;
+  const communication_sensor_driver_t *driver;
+  /* 可由同类设备共享的只读协议参数。 */
+  const void *driver_config;
+  /* 由当前物理设备独占的可选运行时状态。 */
+  void *driver_context;
+} communication_sensor_config_t;
 
-  /* Chosen by the requester and copied into the corresponding response. */
-  uint16_t transaction;
+typedef communication_status_t (*communication_transport_receive_t)(
+    void *callback_context,
+    communication_physical_address_t receive_address, const uint8_t *payload,
+    size_t payload_size);
 
-  uint16_t payload_length;
-  uint8_t payload[COMMUNICATION_MAX_PAYLOAD_SIZE];
-} communication_message_t;
-
-/* Receiver hooks supplied by the communication core to a backend. */
 typedef struct {
+  const char *name;
   void *context;
-  BaseType_t (*message_received)(void *context,
-                                 const communication_message_t *message);
-  BaseType_t (*message_received_from_isr)(
-      void *context, const communication_message_t *message,
-      BaseType_t *higher_priority_task_woken);
-} communication_backend_receiver_t;
+  size_t maximum_payload_size;
 
-typedef struct {
   communication_status_t (*start)(
-      void *context, const communication_backend_receiver_t *receiver);
+      void *context, communication_transport_receive_t receive_callback,
+      void *callback_context);
   void (*stop)(void *context);
-  communication_status_t (*send)(void *context,
-                                 const communication_message_t *message,
-                                 TickType_t timeout_ticks);
-} communication_backend_ops_t;
+  communication_status_t (*send)(
+      void *context, communication_physical_address_t transmit_address,
+      const uint8_t *payload, size_t payload_size, TickType_t timeout_ticks);
+} communication_transport_driver_t;
 
 typedef struct {
-  const communication_backend_ops_t *ops;
-  void *context;
-} communication_backend_t;
-
-typedef struct {
-  uint32_t received_messages;
-  uint32_t dropped_received_messages;
-  uint32_t sent_messages;
-  uint32_t failed_messages;
-} communication_statistics_t;
+  const communication_transport_driver_t *transport;
+  const communication_sensor_config_t *sensors;
+  size_t sensor_count;
+} communication_config_t;
 
 /*
- * Initializes the single system communication service.
- * Call this from task context after the scheduler has started.
- * The backend object must remain valid until communication_deinit().
+ * 初始化一条活动总线及其连接的全部传感器。
+ * 传感器配置表会复制到模块内部，但 driver_config 指针指向的数据必须始终有效。
  */
 communication_status_t
-communication_init(const communication_backend_t *backend);
+communication_init(const communication_config_t *configuration);
+void communication_deinit(void);
 
 /*
- * Stops the current backend and releases the queues/mutex.
- * All users of the communication service must be quiescent before this call.
+ * 类似 Linux ioctl 的设备控制入口。command 和 argument 由具体传感器驱动定义。
+ * argument_size 让驱动能够检查参数结构大小，避免直接强制转换 void *。
  */
-communication_status_t communication_deinit(void);
-
-bool communication_is_initialized(void);
-
-/* Task-context API.  Sending is serialized so protocol backends stay simple. */
 communication_status_t
-communication_send(const communication_message_t *message,
-                   TickType_t timeout_ticks);
+communication_ioctl(communication_sensor_id_t sensor_id,
+                    communication_ioctl_command_t command,
+                    const void *argument, size_t argument_size,
+                    TickType_t timeout_ticks);
 
-communication_status_t communication_receive(communication_message_t *message,
-                                             TickType_t timeout_ticks);
+/* 接收传感器驱动发布的带类型事件，只能在任务上下文调用。 */
+BaseType_t communication_receive_event(communication_event_t *event,
+                                       TickType_t timeout_ticks);
 
-void communication_get_statistics(communication_statistics_t *statistics);
+/*
+ * 供传感器驱动实现使用的辅助接口，普通应用代码通常不应直接调用。
+ */
+communication_sensor_id_t
+communication_device_sensor_id(const communication_device_t *device);
+const void *
+communication_device_driver_config(const communication_device_t *device);
+void *
+communication_device_driver_context(const communication_device_t *device);
+communication_status_t
+communication_device_send(communication_device_t *device,
+                          const uint8_t *payload, size_t payload_size,
+                          TickType_t timeout_ticks);
+communication_status_t
+communication_device_publish(communication_device_t *device,
+                             communication_event_type_t type,
+                             const void *data, size_t data_size);
 
-/* Convenience initializer; transaction and payload remain zero. */
-void communication_message_init(communication_message_t *message, uint16_t peer,
-                                communication_operation_t operation,
-                                uint16_t endpoint);
+#ifdef __cplusplus
+}
+#endif

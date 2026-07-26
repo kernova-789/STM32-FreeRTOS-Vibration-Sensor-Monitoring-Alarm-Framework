@@ -70,7 +70,9 @@
 #define configUSE_16_BIT_TICKS                   0
 #define configUSE_MUTEXES                        1
 #define configQUEUE_REGISTRY_SIZE                8
+#define configCHECK_FOR_STACK_OVERFLOW           2
 #define configUSE_RECURSIVE_MUTEXES              1
+#define configUSE_MALLOC_FAILED_HOOK             1
 #define configUSE_COUNTING_SEMAPHORES            1
 #define configUSE_PORT_OPTIMISED_TASK_SELECTION  0
 
@@ -79,7 +81,7 @@
 #define configMAX_CO_ROUTINE_PRIORITIES          ( 2 )
 
 /* Software timer definitions. */
-#define configUSE_TIMERS                         1
+#define configUSE_TIMERS                         0
 #define configTIMER_TASK_PRIORITY                ( 2 )
 #define configTIMER_QUEUE_LENGTH                 10
 #define configTIMER_TASK_STACK_DEPTH             256
@@ -94,7 +96,7 @@ to exclude the API function. */
 #define INCLUDE_vTaskDelayUntil             1
 #define INCLUDE_vTaskDelay                  1
 #define INCLUDE_xTaskGetSchedulerState      1
-#define INCLUDE_xTimerPendFunctionCall      1
+#define INCLUDE_xTimerPendFunctionCall      0
 #define INCLUDE_xQueueGetMutexHolder        1
 #define INCLUDE_uxTaskGetStackHighWaterMark 1
 #define INCLUDE_xTaskGetCurrentTaskHandle   1
@@ -134,7 +136,13 @@ See http://www.FreeRTOS.org/RTOS-Cortex-M3-M4.html. */
 /* Normal assert() semantics without relying on the provision of an assert.h
 header file. */
 /* USER CODE BEGIN 1 */
-#define configASSERT( x ) if ((x) == 0) {taskDISABLE_INTERRUPTS(); for( ;; );}
+void vApplicationAssertHook(const char *file, int line);
+#define configASSERT(x)                                                     \
+  do {                                                                      \
+    if ((x) == 0) {                                                         \
+      vApplicationAssertHook(__FILE__, __LINE__);                           \
+    }                                                                       \
+  } while (0)
 /* USER CODE END 1 */
 
 /* Definitions that map the FreeRTOS port interrupt handlers to their CMSIS
@@ -148,6 +156,23 @@ standard names. */
 
 /* USER CODE BEGIN Defines */
 /* Section where parameter definitions can be added (for instance, to override default ones in FreeRTOS.h) */
+/*
+ * 这些定义放在 USER CODE 区域内，确保 STM32CubeMX 重新生成代码后仍然有效。
+ * 当前工程没有使用软件定时器，也没有在中断中调用 CMSIS-RTOS2 事件标志 API。
+ */
+#undef configCHECK_FOR_STACK_OVERFLOW
+#define configCHECK_FOR_STACK_OVERFLOW 2
+
+#undef configUSE_MALLOC_FAILED_HOOK
+#define configUSE_MALLOC_FAILED_HOOK 1
+
+#undef configUSE_TIMERS
+#define configUSE_TIMERS 0
+
+#undef INCLUDE_xTimerPendFunctionCall
+#define INCLUDE_xTimerPendFunctionCall 0
+
+#define configUSE_OS2_EVENTFLAGS_FROM_ISR 0
 /* USER CODE END Defines */
 
 #endif /* FREERTOS_CONFIG_H */

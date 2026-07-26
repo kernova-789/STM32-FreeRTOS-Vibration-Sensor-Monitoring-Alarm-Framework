@@ -82,8 +82,8 @@
           </BeforeMake>
           <AfterMake>
             <RunUserProg1>1</RunUserProg1>
-            <RunUserProg2>0</RunUserProg2>
-            <UserProg1Name>fromelf --bin -o ..\BIN\BOOT.bin .\CAN_DISPLAY\CAN_DISPLAY.axf</UserProg1Name>
+            <RunUserProg2>1</RunUserProg2>
+            <UserProg1Name>fromelf --bin -o ..\BIN\BOOT.bin .\CAN_DISPLAY_NOVA\CAN_DISPLAY_NOVA.axf</UserProg1Name>
             <UserProg2Name></UserProg2Name>
             <UserProg1Dos16Mode>0</UserProg1Dos16Mode>
             <UserProg2Dos16Mode>0</UserProg2Dos16Mode>
@@ -434,6 +434,91 @@
               <FileName>stm32f1xx_hal_timebase_tim.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/stm32f1xx_hal_timebase_tim.c</FilePath>
+            </File>
+            <File>
+              <FileName>alarm_service.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\alarm_service.c</FilePath>
+            </File>
+            <File>
+              <FileName>bootloader_ota.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\bootloader_ota.c</FilePath>
+            </File>
+            <File>
+              <FileName>can_app.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\can_app.c</FilePath>
+            </File>
+            <File>
+              <FileName>communication.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\communication.c</FilePath>
+            </File>
+            <File>
+              <FileName>indicator.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\indicator.c</FilePath>
+            </File>
+            <File>
+              <FileName>keyboard.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\keyboard.c</FilePath>
+            </File>
+            <File>
+              <FileName>legacy_can_vibration_sensor.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\legacy_can_vibration_sensor.c</FilePath>
+            </File>
+            <File>
+              <FileName>modbus_rtu.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\modbus_rtu.c</FilePath>
+            </File>
+            <File>
+              <FileName>monitor_app.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\monitor_app.c</FilePath>
+            </File>
+            <File>
+              <FileName>modbus_vibration_sensor.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\modbus_vibration_sensor.c</FilePath>
+            </File>
+            <File>
+              <FileName>product_settings.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\product_settings.c</FilePath>
+            </File>
+            <File>
+              <FileName>screen.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\screen.c</FilePath>
+            </File>
+            <File>
+              <FileName>screen_driver.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\screen_driver.c</FilePath>
+            </File>
+            <File>
+              <FileName>sensor_registry.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\sensor_registry.c</FilePath>
+            </File>
+            <File>
+              <FileName>settings_store.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\settings_store.c</FilePath>
+            </File>
+            <File>
+              <FileName>system_fault.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\system_fault.c</FilePath>
+            </File>
+            <File>
+              <FileName>vibration_sensor.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\vibration_sensor.c</FilePath>
             </File>
           </Files>
         </Group>

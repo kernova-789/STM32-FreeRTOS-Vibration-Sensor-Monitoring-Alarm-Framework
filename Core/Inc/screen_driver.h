@@ -27,25 +27,25 @@ typedef struct {
   bool display_enabled;
 } screen_driver_t;
 
-/* Task-context API for the 128x64 ST7565-compatible display. */
+/* 128x64、ST7565 兼容屏幕的任务上下文接口。 */
 HAL_StatusTypeDef screen_driver_init(screen_driver_t *driver,
                                      const screen_driver_config_t *config);
 
 void screen_driver_clear(screen_driver_t *driver);
 void screen_driver_fill_row(screen_driver_t *driver, uint8_t row, bool on);
 
-/* Draws a 5x7 ASCII string. row is 0..7 and column is a pixel column. */
+/* 绘制 5x7 ASCII 字符串；row 范围为 0..7，column 使用像素列坐标。 */
 void screen_driver_draw_text(screen_driver_t *driver, uint8_t row,
                              uint8_t column, const char *text, bool inverse);
 
-/* Draws an 8x16 ASCII string. row is 0..3 and column is a pixel column. */
+/* 绘制 8x16 ASCII 字符串；row 范围为 0..3，column 使用像素列坐标。 */
 void screen_driver_draw_text_large(screen_driver_t *driver, uint8_t row,
                                    uint8_t column, const char *text,
                                    bool inverse);
 
-/* Turns the LCD pixels on/off without clearing the framebuffer. */
+/* 打开或关闭 LCD 像素显示，但不清除帧缓冲。 */
 HAL_StatusTypeDef screen_driver_set_enabled(screen_driver_t *driver,
                                             bool enabled);
 
-/* Sends the complete framebuffer to the display in eight page bursts. */
+/* 按八个页地址分批把完整帧缓冲发送到屏幕。 */
 HAL_StatusTypeDef screen_driver_flush(screen_driver_t *driver);

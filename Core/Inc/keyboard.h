@@ -28,8 +28,8 @@ typedef struct {
 } keyboard_event_t;
 
 /*
- * Optional non-blocking activity hook. It runs in the keyboard task whenever
- * a debounced PRESSED event is produced, even if the event queue is full.
+ * 可选的非阻塞按键活动回调。键盘任务产生经过消抖的 PRESSED 事件时调用，
+ * 即使事件队列已满也会执行，用于可靠唤醒自动关闭的屏幕。
  */
 typedef void (*keyboard_activity_callback_t)(void *context);
 void keyboard_set_activity_callback(keyboard_activity_callback_t callback,

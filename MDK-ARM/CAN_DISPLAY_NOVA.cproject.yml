@@ -79,6 +79,19 @@ project:
         - file: ../Core/Src/can_app.c
         - file: ../Core/Src/communication.c
         - file: ../Core/Src/indicator.c
+        - file: ../Core/Src/alarm_service.c
+        - file: ../Core/Src/bootloader_ota.c
+        - file: ../Core/Src/legacy_can_vibration_sensor.c
+        - file: ../Core/Src/modbus_rtu.c
+        - file: ../Core/Src/modbus_vibration_sensor.c
+        - file: ../Core/Src/monitor_app.c
+        - file: ../Core/Src/product_settings.c
+        - file: ../Core/Src/screen.c
+        - file: ../Core/Src/screen_driver.c
+        - file: ../Core/Src/sensor_registry.c
+        - file: ../Core/Src/settings_store.c
+        - file: ../Core/Src/system_fault.c
+        - file: ../Core/Src/vibration_sensor.c
     - group: Drivers/STM32F1xx_HAL_Driver
       files:
         - file: ../Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_gpio_ex.c
