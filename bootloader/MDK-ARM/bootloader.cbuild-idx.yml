@@ -1,0 +1,17 @@
+build-idx:
+  generated-by: csolution version 2.14.1+p9-g859cb6c9
+  csolution: bootloader.csolution.yml
+  tmpdir: tmp
+  cprojects:
+    - cproject: bootloader.cproject.yml
+  cbuilds:
+    - cbuild: out/bootloader/bootloader/bootloader+bootloader.cbuild.yml
+      project: bootloader
+      configuration: +bootloader
+      messages:
+        info:
+          - bootloader.cbuild-pack.yml - file is already up-to-date
+          - bootloader+bootloader.cbuild.yml - file is already up-to-date
+      packs-unused:
+        - pack: ARM::CMSIS-DSP@1.16.2
+        - pack: ARM::CMSIS-NN@4.1.0

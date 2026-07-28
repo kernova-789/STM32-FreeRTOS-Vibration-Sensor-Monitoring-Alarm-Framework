@@ -1,0 +1,105 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"jsonFile" : "directory-.-Debug-d0094a50bb2071803777.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.27"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5
+					]
+				}
+			],
+			"name" : "Debug",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "bootloader",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "bootloader+bootloader::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-bootloader+bootloader-Debug-58c82eb2eb0b64936538.json",
+					"name" : "bootloader+bootloader",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "bootloader+bootloader-build::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-bootloader+bootloader-build-Debug-558e3fcbe947fb3c25b2.json",
+					"name" : "bootloader+bootloader-build",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "bootloader+bootloader-configure::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-bootloader+bootloader-configure-Debug-b0d65dfcf97a07150225.json",
+					"name" : "bootloader+bootloader-configure",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "bootloader+bootloader-database::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-bootloader+bootloader-database-Debug-6b7961e35a336f89d7d7.json",
+					"name" : "bootloader+bootloader-database",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "bootloader+bootloader-executes::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-bootloader+bootloader-executes-Debug-a6cfc7ed6c4da0d4af07.json",
+					"name" : "bootloader+bootloader-executes",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "database::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-database-Debug-1dcc75da516762feb664.json",
+					"name" : "database",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "D:/CAN_DISPLAY/bootloader/bootloader/MDK-ARM/build",
+		"source" : "D:/CAN_DISPLAY/bootloader/bootloader/MDK-ARM/tmp"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 7
+	}
+}

@@ -1,0 +1,5 @@
+CompileFlags:
+  CompilationDatabase: e:\Projects\CAN_DISPLAY_NOVA_GPT\new_bootloader\bootloader\MDK-ARM\out\bootloader\bootloader
+  Add:
+    - -include
+    - e:\Projects\CAN_DISPLAY_NOVA_GPT\new_bootloader\bootloader\MDK-ARM\out\bootloader\bootloader\compile_macros.h
