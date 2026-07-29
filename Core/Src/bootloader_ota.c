@@ -2,13 +2,21 @@
 
 #include "stm32f1xx_hal.h"
 
+bool bootloader_ota_is_request_frame(const uint8_t *payload,
+                                     size_t payload_size) {
+  return (payload != NULL) &&
+         (payload_size == BOOTLOADER_OTA_REQUEST_FRAME_SIZE) &&
+         (payload[BOOTLOADER_OTA_REQUEST_COMMAND_INDEX] ==
+          BOOTLOADER_OTA_REQUEST_COMMAND);
+}
+
 bootloader_ota_status_t bootloader_ota_enter(void) {
   FLASH_EraseInitTypeDef erase = {
       .TypeErase = FLASH_TYPEERASE_PAGES,
       .PageAddress = BOOTLOADER_OTA_REQUEST_PAGE_ADDRESS,
       .NbPages = 1U,
   };
-  uint32_t page_error = 0U;
+  uint32_t page_error = UINT32_MAX;
   HAL_StatusTypeDef hal_status;
 
   /*

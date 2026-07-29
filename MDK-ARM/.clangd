@@ -1,5 +1,10 @@
 CompileFlags:
-  CompilationDatabase: e:\Projects\CAN_DISPLAY_NOVA\MDK-ARM\out\CAN_DISPLAY_NOVA\CAN_DISPLAY_NOVA
+  CompilationDatabase: c:\Users\29951\Documents\Projects\CAN_DISDLAY_NOVA\CAN_DISPLAY\MDK-ARM\out\CAN_DISPLAY_NOVA\CAN_DISPLAY_NOVA
+
+---
+If:
+  PathMatch: .*\.(c|C|h)$
+CompileFlags:
   Add:
     - -include
-    - e:\Projects\CAN_DISPLAY_NOVA\MDK-ARM\out\CAN_DISPLAY_NOVA\CAN_DISPLAY_NOVA\compile_macros.h
+    - c:\Users\29951\Documents\Projects\CAN_DISDLAY_NOVA\CAN_DISPLAY\MDK-ARM\out\CAN_DISPLAY_NOVA\CAN_DISPLAY_NOVA\compile_macros_c.h

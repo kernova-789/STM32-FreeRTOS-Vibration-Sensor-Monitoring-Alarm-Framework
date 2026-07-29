@@ -12,23 +12,42 @@ typedef enum {
   SCREEN_PAGE_HOME = 0,
   SCREEN_PAGE_LIMITS,
   SCREEN_PAGE_TRIGGER,
-  SCREEN_PAGE_DISPLAY,
+  SCREEN_PAGE_SAMPLE_RATE,
+  SCREEN_PAGE_WAVEFORM,
 
   SCREEN_PAGE_COUNT,
 } screen_page_t;
+
+#define SCREEN_WAVEFORM_SAMPLE_CAPACITY 109U
+#define SCREEN_WAVEFORM_WINDOW_MS 5000U
+#define SCREEN_WAVEFORM_COLUMN_DURATION_MS                                \
+  ((SCREEN_WAVEFORM_WINDOW_MS + SCREEN_WAVEFORM_SAMPLE_CAPACITY - 1U) /   \
+   SCREEN_WAVEFORM_SAMPLE_CAPACITY)
+#define SCREEN_WAVEFORM_PLOT_LEFT 19U
+#define SCREEN_WAVEFORM_PLOT_RIGHT 127U
+#define SCREEN_WAVEFORM_PLOT_TOP 9U
+#define SCREEN_WAVEFORM_PLOT_CENTER 32U
+#define SCREEN_WAVEFORM_PLOT_BOTTOM 55U
 
 typedef struct {
   QueueHandle_t measurement_queue;
   QueueHandle_t settings_queue;
   QueueHandle_t event_queue;
-  QueueHandle_t power_queue;
   TaskHandle_t task;
   screen_driver_t driver;
   screen_measurements_t measurements;
   screen_settings_t committed_settings;
   screen_settings_t draft_settings;
+  int16_t waveform_min[SCREEN_AXIS_COUNT][SCREEN_WAVEFORM_SAMPLE_CAPACITY];
+  int16_t waveform_max[SCREEN_AXIS_COUNT][SCREEN_WAVEFORM_SAMPLE_CAPACITY];
+  bool waveform_valid[SCREEN_WAVEFORM_SAMPLE_CAPACITY];
+  uint32_t waveform_sequence;
+  uint32_t waveform_rendered_sequence;
+  TickType_t waveform_column_start_ticks;
+  uint8_t waveform_write_index;
+  uint8_t waveform_count;
+  bool waveform_column_active;
   screen_page_t page;
-  TickType_t last_activity_tick;
   uint8_t selection;
   bool editing;
   bool dirty;
@@ -47,23 +66,22 @@ static void screen_change_page(int8_t direction);
 static void screen_move_selection(int8_t direction);
 static void screen_adjust_limit(keyboard_key_t key);
 static void screen_adjust_trigger(keyboard_key_t key);
-static void screen_adjust_display(keyboard_key_t key);
+static void screen_adjust_sample_rate(keyboard_key_t key);
 static void screen_commit_edit(void);
 static void screen_send_simple_event(screen_event_type_t type);
-static void screen_process_power_requests(void);
-static void screen_check_auto_off(TickType_t current_time);
-static void screen_wait_while_off(void);
-static void screen_keyboard_activity(void *context);
-static void screen_discard_keyboard_events(void);
 static HAL_StatusTypeDef screen_render(void);
 static void screen_render_home(void);
 static void screen_render_limits(void);
 static void screen_render_trigger(void);
-static void screen_render_display(void);
+static void screen_render_sample_rate(void);
+static void screen_render_waveform(void);
 static void screen_draw_selected_line(uint8_t row, const char *text,
                                       bool selected);
 static void screen_format_centi_g(uint16_t value, char output[6]);
 static void screen_format_u16_4(uint16_t value, char output[5]);
+static void screen_format_sample_rate(
+    vibration_sensor_sample_rate_t sample_rate, char output[8]);
+static uint8_t screen_waveform_value_to_y(int16_t value);
 static uint8_t screen_selection_count(screen_page_t page);
 static uint16_t screen_adjust_value(uint16_t value, uint16_t step,
                                     bool increase, uint16_t minimum,
@@ -77,11 +95,7 @@ BaseType_t screen_init(const screen_settings_t *initial_settings) {
       .trigger_count = 10U,
       .alarm_seconds = 60U,
       .auto_stop_alarm = false,
-      .auto_off =
-          {
-              .enabled = false,
-              .timeout_seconds = SCREEN_AUTO_OFF_DEFAULT_SECONDS,
-          },
+      .sample_rate = VIBRATION_SENSOR_SAMPLE_RATE_533_34_HZ,
   };
   BaseType_t result;
 
@@ -98,7 +112,6 @@ BaseType_t screen_init(const screen_settings_t *initial_settings) {
   screen_service.editing = false;
   screen_service.dirty = true;
   screen_service.force_render = true;
-  screen_service.last_activity_tick = xTaskGetTickCount();
 
   screen_service.measurement_queue = xQueueCreate(
       SCREEN_MEASUREMENT_QUEUE_LENGTH, sizeof(screen_measurements_t));
@@ -106,12 +119,9 @@ BaseType_t screen_init(const screen_settings_t *initial_settings) {
       xQueueCreate(SCREEN_SETTINGS_QUEUE_LENGTH, sizeof(screen_settings_t));
   screen_service.event_queue =
       xQueueCreate(SCREEN_EVENT_QUEUE_LENGTH, sizeof(screen_event_t));
-  screen_service.power_queue =
-      xQueueCreate(SCREEN_POWER_QUEUE_LENGTH, sizeof(bool));
   if ((screen_service.measurement_queue == NULL) ||
       (screen_service.settings_queue == NULL) ||
-      (screen_service.event_queue == NULL) ||
-      (screen_service.power_queue == NULL)) {
+      (screen_service.event_queue == NULL)) {
     if (screen_service.measurement_queue != NULL) {
       vQueueDelete(screen_service.measurement_queue);
     }
@@ -121,13 +131,9 @@ BaseType_t screen_init(const screen_settings_t *initial_settings) {
     if (screen_service.event_queue != NULL) {
       vQueueDelete(screen_service.event_queue);
     }
-    if (screen_service.power_queue != NULL) {
-      vQueueDelete(screen_service.power_queue);
-    }
     screen_service.measurement_queue = NULL;
     screen_service.settings_queue = NULL;
     screen_service.event_queue = NULL;
-    screen_service.power_queue = NULL;
     return errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY;
   }
 
@@ -137,11 +143,9 @@ BaseType_t screen_init(const screen_settings_t *initial_settings) {
     vQueueDelete(screen_service.measurement_queue);
     vQueueDelete(screen_service.settings_queue);
     vQueueDelete(screen_service.event_queue);
-    vQueueDelete(screen_service.power_queue);
     screen_service.measurement_queue = NULL;
     screen_service.settings_queue = NULL;
     screen_service.event_queue = NULL;
-    screen_service.power_queue = NULL;
     screen_service.task = NULL;
     return errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY;
   }
@@ -154,6 +158,84 @@ screen_update_measurements(const screen_measurements_t *measurements) {
     return pdFAIL;
   }
   return xQueueOverwrite(screen_service.measurement_queue, measurements);
+}
+
+BaseType_t
+screen_push_waveform_sample(const screen_waveform_sample_t *sample) {
+  const TickType_t column_ticks =
+      (pdMS_TO_TICKS(SCREEN_WAVEFORM_COLUMN_DURATION_MS) == 0U)
+          ? 1U
+          : pdMS_TO_TICKS(SCREEN_WAVEFORM_COLUMN_DURATION_MS);
+
+  if ((sample == NULL) || (screen_service.task == NULL)) {
+    return pdFAIL;
+  }
+
+  taskENTER_CRITICAL();
+  if (!screen_service.waveform_column_active) {
+    screen_service.waveform_column_active = true;
+    screen_service.waveform_column_start_ticks = sample->timestamp_ticks;
+    screen_service.waveform_write_index = 0U;
+    screen_service.waveform_count = 1U;
+    screen_service.waveform_valid[0] = true;
+    for (uint8_t axis = 0U; axis < SCREEN_AXIS_COUNT; ++axis) {
+      screen_service.waveform_min[axis][0] = sample->signed_centi_g[axis];
+      screen_service.waveform_max[axis][0] = sample->signed_centi_g[axis];
+    }
+  } else {
+    const TickType_t elapsed_ticks =
+        sample->timestamp_ticks - screen_service.waveform_column_start_ticks;
+
+    if (elapsed_ticks >= column_ticks) {
+      uint32_t elapsed_columns = elapsed_ticks / column_ticks;
+      uint32_t columns_to_clear = elapsed_columns;
+
+      if (columns_to_clear > SCREEN_WAVEFORM_SAMPLE_CAPACITY) {
+        columns_to_clear = SCREEN_WAVEFORM_SAMPLE_CAPACITY;
+      }
+      for (uint32_t column = 0U; column < columns_to_clear; ++column) {
+        screen_service.waveform_write_index =
+            (uint8_t)((screen_service.waveform_write_index + 1U) %
+                      SCREEN_WAVEFORM_SAMPLE_CAPACITY);
+        screen_service
+            .waveform_valid[screen_service.waveform_write_index] = false;
+        if (screen_service.waveform_count <
+            SCREEN_WAVEFORM_SAMPLE_CAPACITY) {
+          ++screen_service.waveform_count;
+        }
+      }
+      screen_service.waveform_column_start_ticks +=
+          (TickType_t)(elapsed_columns * column_ticks);
+      screen_service
+          .waveform_valid[screen_service.waveform_write_index] = true;
+      for (uint8_t axis = 0U; axis < SCREEN_AXIS_COUNT; ++axis) {
+        screen_service
+            .waveform_min[axis][screen_service.waveform_write_index] =
+            sample->signed_centi_g[axis];
+        screen_service
+            .waveform_max[axis][screen_service.waveform_write_index] =
+            sample->signed_centi_g[axis];
+      }
+    } else {
+      const uint8_t write_index = screen_service.waveform_write_index;
+
+      for (uint8_t axis = 0U; axis < SCREEN_AXIS_COUNT; ++axis) {
+        if (sample->signed_centi_g[axis] <
+            screen_service.waveform_min[axis][write_index]) {
+          screen_service.waveform_min[axis][write_index] =
+              sample->signed_centi_g[axis];
+        }
+        if (sample->signed_centi_g[axis] >
+            screen_service.waveform_max[axis][write_index]) {
+          screen_service.waveform_max[axis][write_index] =
+              sample->signed_centi_g[axis];
+        }
+      }
+    }
+  }
+  ++screen_service.waveform_sequence;
+  taskEXIT_CRITICAL();
+  return pdPASS;
 }
 
 BaseType_t screen_set_settings(const screen_settings_t *settings,
@@ -187,37 +269,6 @@ BaseType_t screen_get_settings(screen_settings_t *settings) {
   return pdPASS;
 }
 
-BaseType_t screen_set_enabled(bool enabled) {
-  BaseType_t result;
-
-  if (screen_service.power_queue == NULL) {
-    return pdFAIL;
-  }
-  result = xQueueOverwrite(screen_service.power_queue, &enabled);
-  if ((result == pdPASS) && (screen_service.task != NULL)) {
-    (void)xTaskNotify(screen_service.task, SCREEN_NOTIFICATION_POWER_REQUEST,
-                      eSetBits);
-  }
-  return result;
-}
-
-BaseType_t screen_turn_on(void) { return screen_set_enabled(true); }
-
-BaseType_t screen_turn_off(void) { return screen_set_enabled(false); }
-
-BaseType_t screen_set_auto_off(
-    const screen_auto_off_settings_t *auto_off_settings,
-    TickType_t timeout_ticks) {
-  screen_settings_t settings;
-
-  if ((auto_off_settings == NULL) ||
-      (screen_get_settings(&settings) != pdPASS)) {
-    return pdFAIL;
-  }
-  settings.auto_off = *auto_off_settings;
-  return screen_set_settings(&settings, timeout_ticks);
-}
-
 static void screen_task(void *argument) {
 
   TickType_t last_wake_time = xTaskGetTickCount();
@@ -228,37 +279,25 @@ static void screen_task(void *argument) {
     vTaskDelete(NULL);
     return;
   }
-  keyboard_set_activity_callback(screen_keyboard_activity,
-                                 xTaskGetCurrentTaskHandle());
 
-  screen_driver_draw_text_large(&screen_service.driver, 1U, 12U,
-                                "DISPLAY READY", false);
+  screen_driver_draw_text_large(&screen_service.driver, 0U, 0U,
+                                "DESIGNED BY", false);
+  screen_driver_draw_text_large(&screen_service.driver, 1U, 0U,
+                                "GITHUB", false);
+  screen_driver_draw_text_large(&screen_service.driver, 3U, 0U,
+                                "KERNOVA", false);
   (void)screen_driver_flush(&screen_service.driver);
-  vTaskDelay(pdMS_TO_TICKS(500U));
+  vTaskDelay(pdMS_TO_TICKS(1500U));
   last_wake_time = xTaskGetTickCount();
   screen_service.dirty = true;
   screen_service.force_render = true;
-  screen_service.last_activity_tick = last_wake_time;
 
   for (;;) {
-    uint32_t ignored_notifications;
-    TickType_t current_time;
+    const TickType_t current_time = xTaskGetTickCount();
 
-    /*
-     * 轮询队列前先清除与队列中已有事件对应的旧通知。
-     * 此后到达的新通知会继续保留；若本轮关闭屏幕，它仍能唤醒屏幕任务。
-     */
-    (void)xTaskNotifyWait(0U, UINT32_MAX, &ignored_notifications, 0U);
     screen_process_inputs();
-    current_time = xTaskGetTickCount();
-    screen_check_auto_off(current_time);
-    if (!screen_service.driver.display_enabled) {
-      screen_wait_while_off();
-      last_wake_time = xTaskGetTickCount();
-      continue;
-    }
 
-    if (screen_service.driver.display_enabled && screen_service.dirty &&
+    if (screen_service.dirty &&
         (screen_service.force_render ||
          ((current_time - last_render_time) >=
           pdMS_TO_TICKS(SCREEN_REFRESH_PERIOD_MS)))) {
@@ -305,10 +344,8 @@ static void screen_normalize_settings(screen_settings_t *settings) {
   } else if (settings->alarm_seconds > SCREEN_VALUE_MAX) {
     settings->alarm_seconds = SCREEN_VALUE_MAX;
   }
-  if (settings->auto_off.timeout_seconds == 0U) {
-    settings->auto_off.timeout_seconds = 1U;
-  } else if (settings->auto_off.timeout_seconds > SCREEN_VALUE_MAX) {
-    settings->auto_off.timeout_seconds = SCREEN_VALUE_MAX;
+  if (!vibration_sensor_sample_rate_is_supported(settings->sample_rate)) {
+    settings->sample_rate = VIBRATION_SENSOR_SAMPLE_RATE_533_34_HZ;
   }
 }
 
@@ -316,8 +353,6 @@ static void screen_process_inputs(void) {
   keyboard_event_t key_event;
   screen_measurements_t measurements;
   screen_settings_t settings;
-
-  screen_process_power_requests();
 
   while (keyboard_receive_event(&key_event, 0U) == pdPASS) {
     screen_handle_key(&key_event);
@@ -339,97 +374,17 @@ static void screen_process_inputs(void) {
     screen_service.editing = false;
     screen_service.dirty = true;
     screen_service.force_render = true;
-    screen_service.last_activity_tick = xTaskGetTickCount();
   }
-}
 
-static void screen_process_power_requests(void) {
-  bool display_enabled;
+  if (screen_service.page == SCREEN_PAGE_WAVEFORM) {
+    uint32_t waveform_sequence;
 
-  while (xQueueReceive(screen_service.power_queue, &display_enabled, 0U) ==
-         pdPASS) {
-    if (screen_driver_set_enabled(&screen_service.driver, display_enabled) !=
-        HAL_OK) {
-      continue;
-    }
-    if (display_enabled) {
-      screen_service.last_activity_tick = xTaskGetTickCount();
+    taskENTER_CRITICAL();
+    waveform_sequence = screen_service.waveform_sequence;
+    taskEXIT_CRITICAL();
+    if (waveform_sequence != screen_service.waveform_rendered_sequence) {
       screen_service.dirty = true;
-      screen_service.force_render = true;
     }
-  }
-}
-
-static void screen_check_auto_off(TickType_t current_time) {
-  TickType_t timeout_ticks;
-  uint32_t timeout_seconds;
-
-  if (!screen_service.driver.display_enabled ||
-      !screen_service.committed_settings.auto_off.enabled) {
-    return;
-  }
-  if (keyboard_get_state_mask() != 0U) {
-    screen_service.last_activity_tick = current_time;
-    return;
-  }
-
-  timeout_seconds =
-      (uint32_t)screen_service.committed_settings.auto_off.timeout_seconds;
-  timeout_ticks =
-      (TickType_t)(timeout_seconds * (uint32_t)configTICK_RATE_HZ);
-  if (timeout_ticks == 0U) {
-    timeout_ticks = 1U;
-  }
-
-  if ((current_time - screen_service.last_activity_tick) >= timeout_ticks) {
-    (void)screen_driver_set_enabled(&screen_service.driver, false);
-  }
-}
-
-static void screen_wait_while_off(void) {
-  uint32_t notifications;
-
-  while (!screen_service.driver.display_enabled) {
-    /*
-     * 阻塞前先检查一次队列。若请求恰好在检查后到达，
-     * 对应的任务通知会负责唤醒，因此不需要周期轮询。
-     */
-    screen_process_power_requests();
-    if (screen_service.driver.display_enabled) {
-      break;
-    }
-    if (xTaskNotifyWait(0U, UINT32_MAX, &notifications, portMAX_DELAY) !=
-        pdTRUE) {
-      continue;
-    }
-
-    if ((notifications & SCREEN_NOTIFICATION_POWER_REQUEST) != 0U) {
-      screen_process_power_requests();
-    }
-    if ((notifications & SCREEN_NOTIFICATION_KEY_ACTIVITY) != 0U) {
-      screen_discard_keyboard_events();
-      if (screen_driver_set_enabled(&screen_service.driver, true) == HAL_OK) {
-        screen_service.last_activity_tick = xTaskGetTickCount();
-        screen_service.dirty = true;
-        screen_service.force_render = true;
-      }
-    }
-  }
-}
-
-static void screen_keyboard_activity(void *context) {
-  TaskHandle_t screen_task_handle = (TaskHandle_t)context;
-
-  if (screen_task_handle != NULL) {
-    (void)xTaskNotify(screen_task_handle, SCREEN_NOTIFICATION_KEY_ACTIVITY,
-                      eSetBits);
-  }
-}
-
-static void screen_discard_keyboard_events(void) {
-  keyboard_event_t event;
-
-  while (keyboard_receive_event(&event, 0U) == pdPASS) {
   }
 }
 
@@ -437,16 +392,13 @@ static void screen_handle_key(const keyboard_event_t *event) {
   if (event->type == KEYBOARD_EVENT_RELEASED) {
     return;
   }
-  screen_service.last_activity_tick = xTaskGetTickCount();
 
   if ((event->type == KEYBOARD_EVENT_REPEAT) && !screen_service.editing) {
     return;
   }
   if ((event->type == KEYBOARD_EVENT_REPEAT) &&
-      (((screen_service.page == SCREEN_PAGE_TRIGGER) &&
-        (screen_service.selection == 3U)) ||
-       ((screen_service.page == SCREEN_PAGE_DISPLAY) &&
-        (screen_service.selection == 0U)))) {
+      (screen_service.page == SCREEN_PAGE_TRIGGER) &&
+      (screen_service.selection == 3U)) {
     return;
   }
 
@@ -474,7 +426,7 @@ static void screen_handle_navigation_key(keyboard_key_t key) {
   case KEYBOARD_KEY_ENTER:
     if (screen_service.page == SCREEN_PAGE_HOME) {
       screen_send_simple_event(SCREEN_EVENT_CLEAR_PEAK_REQUEST);
-    } else {
+    } else if (screen_service.page != SCREEN_PAGE_WAVEFORM) {
       screen_service.draft_settings = screen_service.committed_settings;
       screen_service.editing = true;
       screen_service.dirty = true;
@@ -484,7 +436,7 @@ static void screen_handle_navigation_key(keyboard_key_t key) {
   case KEYBOARD_KEY_CANCEL:
     if (screen_service.page == SCREEN_PAGE_HOME) {
       screen_send_simple_event(SCREEN_EVENT_ALARM_CANCEL_REQUEST);
-    } else {
+    } else if (screen_service.page != SCREEN_PAGE_WAVEFORM) {
       screen_service.page = SCREEN_PAGE_HOME;
       screen_service.selection = 0U;
       screen_service.dirty = true;
@@ -515,8 +467,8 @@ static void screen_handle_edit_key(keyboard_key_t key) {
       screen_adjust_limit(key);
     } else if (screen_service.page == SCREEN_PAGE_TRIGGER) {
       screen_adjust_trigger(key);
-    } else if (screen_service.page == SCREEN_PAGE_DISPLAY) {
-      screen_adjust_display(key);
+    } else if (screen_service.page == SCREEN_PAGE_SAMPLE_RATE) {
+      screen_adjust_sample_rate(key);
     }
     screen_service.dirty = true;
     screen_service.force_render = true;
@@ -605,28 +557,25 @@ static void screen_adjust_trigger(keyboard_key_t key) {
   }
 }
 
-static void screen_adjust_display(keyboard_key_t key) {
-  const bool increase = (key == KEYBOARD_KEY_UP) ||
-                        (key == KEYBOARD_KEY_RIGHT);
-  const uint16_t step =
-      ((key == KEYBOARD_KEY_LEFT) || (key == KEYBOARD_KEY_RIGHT))
-          ? SCREEN_AUTO_OFF_COARSE_STEP_SECONDS
-          : SCREEN_AUTO_OFF_FINE_STEP_SECONDS;
+static void screen_adjust_sample_rate(keyboard_key_t key) {
+  const bool increase =
+      (key == KEYBOARD_KEY_UP) || (key == KEYBOARD_KEY_RIGHT);
+  vibration_sensor_sample_rate_t sample_rate =
+      screen_service.draft_settings.sample_rate;
 
-  switch (screen_service.selection) {
-  case 0U:
-    screen_service.draft_settings.auto_off.enabled =
-        !screen_service.draft_settings.auto_off.enabled;
-    break;
-  case 1U:
-    screen_service.draft_settings.auto_off.timeout_seconds =
-        screen_adjust_value(
-            screen_service.draft_settings.auto_off.timeout_seconds, step,
-            increase, 1U, SCREEN_VALUE_MAX);
-    break;
-  default:
-    break;
+  if (increase) {
+    sample_rate =
+        (sample_rate + 1U >= VIBRATION_SENSOR_SAMPLE_RATE_COUNT)
+            ? VIBRATION_SENSOR_SAMPLE_RATE_533_34_HZ
+            : (vibration_sensor_sample_rate_t)(sample_rate + 1U);
+  } else {
+    sample_rate =
+        (sample_rate == VIBRATION_SENSOR_SAMPLE_RATE_533_34_HZ)
+            ? (vibration_sensor_sample_rate_t)(
+                  VIBRATION_SENSOR_SAMPLE_RATE_COUNT - 1U)
+            : (vibration_sensor_sample_rate_t)(sample_rate - 1U);
   }
+  screen_service.draft_settings.sample_rate = sample_rate;
 }
 
 static void screen_commit_edit(void) {
@@ -639,7 +588,6 @@ static void screen_commit_edit(void) {
   screen_service.editing = false;
   screen_service.dirty = true;
   screen_service.force_render = true;
-  screen_service.last_activity_tick = xTaskGetTickCount();
 
   event.type = SCREEN_EVENT_SETTINGS_COMMITTED;
   event.data.settings = screen_service.committed_settings;
@@ -667,8 +615,11 @@ static HAL_StatusTypeDef screen_render(void) {
   case SCREEN_PAGE_TRIGGER:
     screen_render_trigger();
     break;
-  case SCREEN_PAGE_DISPLAY:
-    screen_render_display();
+  case SCREEN_PAGE_SAMPLE_RATE:
+    screen_render_sample_rate();
+    break;
+  case SCREEN_PAGE_WAVEFORM:
+    screen_render_waveform();
     break;
   default:
     return HAL_ERROR;
@@ -767,34 +718,133 @@ static void screen_render_trigger(void) {
   screen_draw_selected_line(3U, line, screen_service.selection == 3U);
 }
 
-static void screen_render_display(void) {
-  char line[17] = "AUTO OFF NO     ";
-  char value[5];
+static void screen_render_sample_rate(void) {
+  char rate[8];
+  char line[] = " 0000.00 HZ";
 
+  screen_driver_draw_text_large(&screen_service.driver, 0U, 0U, "SAMPLE RATE",
+                                false);
+  screen_format_sample_rate(screen_service.draft_settings.sample_rate, rate);
+  memcpy(&line[1], rate, 7U);
+  if (screen_service.selection == 0U) {
+    screen_driver_fill_row(&screen_service.driver, 2U, true);
+    screen_driver_fill_row(&screen_service.driver, 3U, true);
+  }
+  screen_driver_draw_text_large(&screen_service.driver, 1U, 0U, line,
+                                screen_service.selection == 0U);
   screen_driver_draw_text_large(
-      &screen_service.driver, 0U, 0U,
-      screen_service.editing ? "DISPLAY     EDIT" : "DISPLAY SETTINGS",
-      false);
+      &screen_service.driver, 2U, 0U,
+      screen_service.editing ? "UP/DN SELECT" : "ENTER EDIT", false);
+  screen_driver_draw_text_large(
+      &screen_service.driver, 3U, 0U,
+      screen_service.editing ? "ENTER SAVE" : "LEFT/RIGHT", false);
+}
 
-  if (screen_service.draft_settings.auto_off.enabled) {
-    memcpy(&line[9], "YES", 3U);
-  }
-  if (screen_service.editing && (screen_service.selection == 0U)) {
-    line[15] = 'E';
-  }
-  screen_draw_selected_line(1U, line, screen_service.selection == 0U);
+static void screen_render_waveform(void) {
+  static const char axis_names[SCREEN_AXIS_COUNT] = {'X', 'Y', 'Z'};
+  int16_t minimums[SCREEN_WAVEFORM_SAMPLE_CAPACITY];
+  int16_t maximums[SCREEN_WAVEFORM_SAMPLE_CAPACITY];
+  bool valid[SCREEN_WAVEFORM_SAMPLE_CAPACITY];
+  char header[] = "X WAVE 5S +/-16G";
+  uint32_t sequence;
+  uint8_t count;
+  uint8_t start;
+  uint8_t axis = screen_service.selection;
+  bool has_valid = false;
 
-  memcpy(line, "IDLE   0000S    ", sizeof(line));
-  screen_format_u16_4(
-      screen_service.draft_settings.auto_off.timeout_seconds, value);
-  memcpy(&line[7], value, 4U);
-  if (screen_service.editing && (screen_service.selection == 1U)) {
-    line[15] = 'E';
+  if (axis >= SCREEN_AXIS_COUNT) {
+    axis = 0U;
   }
-  screen_draw_selected_line(2U, line, screen_service.selection == 1U);
 
-  screen_driver_draw_text_large(&screen_service.driver, 3U, 0U,
-                                "WAKE ANY KEY", false);
+  taskENTER_CRITICAL();
+  count = screen_service.waveform_count;
+  start = (count == SCREEN_WAVEFORM_SAMPLE_CAPACITY)
+              ? (uint8_t)((screen_service.waveform_write_index + 1U) %
+                          SCREEN_WAVEFORM_SAMPLE_CAPACITY)
+              : 0U;
+  for (uint8_t index = 0U; index < count; ++index) {
+    const uint8_t source =
+        (uint8_t)((start + index) % SCREEN_WAVEFORM_SAMPLE_CAPACITY);
+
+    minimums[index] = screen_service.waveform_min[axis][source];
+    maximums[index] = screen_service.waveform_max[axis][source];
+    valid[index] = screen_service.waveform_valid[source];
+  }
+  sequence = screen_service.waveform_sequence;
+  taskEXIT_CRITICAL();
+  screen_service.waveform_rendered_sequence = sequence;
+
+  header[0] = axis_names[axis];
+
+  screen_driver_draw_text(&screen_service.driver, 0U, 0U, header, false);
+  screen_driver_draw_text(&screen_service.driver, 1U, 0U, "+16", false);
+  screen_driver_draw_text(&screen_service.driver, 4U, 12U, "0", false);
+  screen_driver_draw_text(&screen_service.driver, 6U, 0U, "-16", false);
+  screen_driver_draw_text(&screen_service.driver, 7U,
+                          SCREEN_WAVEFORM_PLOT_LEFT, "-5S", false);
+  screen_driver_draw_text(&screen_service.driver, 7U, 122U, "0", false);
+
+  screen_driver_draw_line(
+      &screen_service.driver, (uint8_t)(SCREEN_WAVEFORM_PLOT_LEFT - 1U),
+      (uint8_t)(SCREEN_WAVEFORM_PLOT_TOP - 1U),
+      (uint8_t)(SCREEN_WAVEFORM_PLOT_LEFT - 1U),
+      SCREEN_WAVEFORM_PLOT_BOTTOM, true);
+  screen_driver_draw_line(
+      &screen_service.driver, (uint8_t)(SCREEN_WAVEFORM_PLOT_LEFT - 1U),
+      SCREEN_WAVEFORM_PLOT_BOTTOM, SCREEN_WAVEFORM_PLOT_RIGHT,
+      SCREEN_WAVEFORM_PLOT_BOTTOM, true);
+  for (uint8_t x = SCREEN_WAVEFORM_PLOT_LEFT;
+       x <= SCREEN_WAVEFORM_PLOT_RIGHT; x = (uint8_t)(x + 4U)) {
+    screen_driver_draw_pixel(&screen_service.driver, x,
+                             SCREEN_WAVEFORM_PLOT_CENTER, true);
+    if (x > (uint8_t)(SCREEN_WAVEFORM_PLOT_RIGHT - 4U)) {
+      break;
+    }
+  }
+
+  for (uint8_t index = 0U; index < count; ++index) {
+    if (valid[index]) {
+      has_valid = true;
+      break;
+    }
+  }
+  if (!has_valid) {
+    screen_driver_draw_text(&screen_service.driver, 3U, 52U, "NO DATA",
+                            false);
+    return;
+  }
+
+  {
+    const uint8_t first_x =
+        (uint8_t)(SCREEN_WAVEFORM_PLOT_RIGHT - count + 1U);
+    uint8_t previous_x = 0U;
+    uint8_t previous_y = 0U;
+    bool previous_valid = false;
+
+    for (uint8_t index = 0U; index < count; ++index) {
+      const uint8_t x = (uint8_t)(first_x + index);
+      uint8_t top_y;
+      uint8_t bottom_y;
+      uint8_t center_y;
+
+      if (!valid[index]) {
+        previous_valid = false;
+        continue;
+      }
+      top_y = screen_waveform_value_to_y(maximums[index]);
+      bottom_y = screen_waveform_value_to_y(minimums[index]);
+      center_y = (uint8_t)(((uint16_t)top_y + bottom_y) / 2U);
+      screen_driver_draw_line(&screen_service.driver, x, top_y, x, bottom_y,
+                              true);
+      if (previous_valid) {
+        screen_driver_draw_line(&screen_service.driver, previous_x, previous_y,
+                                x, center_y, true);
+      }
+      previous_x = x;
+      previous_y = center_y;
+      previous_valid = true;
+    }
+  }
 }
 
 static void screen_draw_selected_line(uint8_t row, const char *text,
@@ -831,6 +881,48 @@ static void screen_format_u16_4(uint16_t value, char output[5]) {
   output[4] = '\0';
 }
 
+static void screen_format_sample_rate(
+    vibration_sensor_sample_rate_t sample_rate, char output[8]) {
+  uint32_t centi_hz =
+      vibration_sensor_sample_rate_centi_hz(sample_rate);
+  uint16_t integer_hz = (uint16_t)(centi_hz / 100U);
+  uint8_t decimal_hz = (uint8_t)(centi_hz % 100U);
+
+  output[0] =
+      (integer_hz >= 1000U)
+          ? (char)('0' + ((integer_hz / 1000U) % 10U))
+          : ' ';
+  output[1] = (char)('0' + ((integer_hz / 100U) % 10U));
+  output[2] = (char)('0' + ((integer_hz / 10U) % 10U));
+  output[3] = (char)('0' + (integer_hz % 10U));
+  output[4] = '.';
+  output[5] = (char)('0' + ((decimal_hz / 10U) % 10U));
+  output[6] = (char)('0' + (decimal_hz % 10U));
+  output[7] = '\0';
+}
+
+static uint8_t screen_waveform_value_to_y(int16_t value) {
+  int32_t limited_value = value;
+  int32_t y;
+
+  if (limited_value > (int32_t)SCREEN_ACCELERATION_MAX_CENTI_G) {
+    limited_value = SCREEN_ACCELERATION_MAX_CENTI_G;
+  } else if (limited_value < -(int32_t)SCREEN_ACCELERATION_MAX_CENTI_G) {
+    limited_value = -(int32_t)SCREEN_ACCELERATION_MAX_CENTI_G;
+  }
+  y = (int32_t)SCREEN_WAVEFORM_PLOT_CENTER -
+      ((limited_value *
+        ((int32_t)SCREEN_WAVEFORM_PLOT_CENTER -
+         (int32_t)SCREEN_WAVEFORM_PLOT_TOP)) /
+       (int32_t)SCREEN_ACCELERATION_MAX_CENTI_G);
+  if (y < SCREEN_WAVEFORM_PLOT_TOP) {
+    y = SCREEN_WAVEFORM_PLOT_TOP;
+  } else if (y > SCREEN_WAVEFORM_PLOT_BOTTOM) {
+    y = SCREEN_WAVEFORM_PLOT_BOTTOM;
+  }
+  return (uint8_t)y;
+}
+
 static uint8_t screen_selection_count(screen_page_t page) {
   switch (page) {
   case SCREEN_PAGE_HOME:
@@ -839,8 +931,10 @@ static uint8_t screen_selection_count(screen_page_t page) {
     return 6U;
   case SCREEN_PAGE_TRIGGER:
     return 4U;
-  case SCREEN_PAGE_DISPLAY:
-    return 2U;
+  case SCREEN_PAGE_SAMPLE_RATE:
+    return 1U;
+  case SCREEN_PAGE_WAVEFORM:
+    return SCREEN_AXIS_COUNT;
   default:
     return 1U;
   }

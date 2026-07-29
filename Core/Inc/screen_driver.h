@@ -24,7 +24,6 @@ typedef struct {
   screen_driver_config_t config;
   uint8_t framebuffer[SCREEN_DRIVER_BUFFER_SIZE];
   bool initialized;
-  bool display_enabled;
 } screen_driver_t;
 
 /* 128x64、ST7565 兼容屏幕的任务上下文接口。 */
@@ -33,6 +32,10 @@ HAL_StatusTypeDef screen_driver_init(screen_driver_t *driver,
 
 void screen_driver_clear(screen_driver_t *driver);
 void screen_driver_fill_row(screen_driver_t *driver, uint8_t row, bool on);
+void screen_driver_draw_pixel(screen_driver_t *driver, uint8_t x, uint8_t y,
+                              bool on);
+void screen_driver_draw_line(screen_driver_t *driver, uint8_t x0, uint8_t y0,
+                             uint8_t x1, uint8_t y1, bool on);
 
 /* 绘制 5x7 ASCII 字符串；row 范围为 0..7，column 使用像素列坐标。 */
 void screen_driver_draw_text(screen_driver_t *driver, uint8_t row,
@@ -42,10 +45,6 @@ void screen_driver_draw_text(screen_driver_t *driver, uint8_t row,
 void screen_driver_draw_text_large(screen_driver_t *driver, uint8_t row,
                                    uint8_t column, const char *text,
                                    bool inverse);
-
-/* 打开或关闭 LCD 像素显示，但不清除帧缓冲。 */
-HAL_StatusTypeDef screen_driver_set_enabled(screen_driver_t *driver,
-                                            bool enabled);
 
 /* 按八个页地址分批把完整帧缓冲发送到屏幕。 */
 HAL_StatusTypeDef screen_driver_flush(screen_driver_t *driver);

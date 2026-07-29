@@ -13,7 +13,7 @@ extern "C" {
 
 #define COMMUNICATION_MAX_SENSOR_COUNT 8U
 #define COMMUNICATION_EVENT_DATA_CAPACITY 16U
-#define COMMUNICATION_EVENT_QUEUE_LENGTH 16U
+#define COMMUNICATION_EVENT_QUEUE_LENGTH 32U
 
 #define COMMUNICATION_SENSOR_ID_INVALID ((communication_sensor_id_t)0U)
 
@@ -98,6 +98,15 @@ typedef communication_status_t (*communication_transport_receive_t)(
     communication_physical_address_t receive_address, const uint8_t *payload,
     size_t payload_size);
 
+/*
+ * 在按设备接收地址分发前检查系统级控制帧。
+ * 返回 true 表示该帧已被处理，不再交给普通传感器驱动。
+ * 回调运行在传输层接收任务上下文中，不能执行耗时或阻塞操作。
+ */
+typedef bool (*communication_system_frame_handler_t)(
+    communication_physical_address_t receive_address, const uint8_t *payload,
+    size_t payload_size, void *context);
+
 typedef struct {
   const char *name;
   void *context;
@@ -116,6 +125,8 @@ typedef struct {
   const communication_transport_driver_t *transport;
   const communication_sensor_config_t *sensors;
   size_t sensor_count;
+  communication_system_frame_handler_t system_frame_handler;
+  void *system_frame_handler_context;
 } communication_config_t;
 
 /*

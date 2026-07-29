@@ -1,8 +1,8 @@
 build-idx:
-  generated-by: csolution version 2.14.1+p9-g859cb6c9
+  generated-by: csolution version 2.14.1+p38-gf512b381
   csolution: CAN_DISPLAY_NOVA.csolution.yml
   cbuild-run: out/CAN_DISPLAY_NOVA+CAN_DISPLAY_NOVA.cbuild-run.yml
-  tmpdir: tmp
+  tmpdir: tmp/CAN_DISPLAY_NOVA/default
   cprojects:
     - cproject: CAN_DISPLAY_NOVA.cproject.yml
   cbuilds:

@@ -11,6 +11,8 @@ typedef struct {
   const communication_transport_driver_t *transport;
   struct communication_device devices[COMMUNICATION_MAX_SENSOR_COUNT];
   size_t device_count;
+  communication_system_frame_handler_t system_frame_handler;
+  void *system_frame_handler_context;
   QueueHandle_t event_queue;
   uint32_t dropped_events;
   bool initialized;
@@ -46,6 +48,10 @@ communication_init(const communication_config_t *configuration) {
   memset(&communication_service, 0, sizeof(communication_service));
   communication_service.transport = configuration->transport;
   communication_service.device_count = configuration->sensor_count;
+  communication_service.system_frame_handler =
+      configuration->system_frame_handler;
+  communication_service.system_frame_handler_context =
+      configuration->system_frame_handler_context;
 
   for (size_t index = 0U; index < configuration->sensor_count; ++index) {
     communication_service.devices[index].configuration =
@@ -308,6 +314,18 @@ static communication_status_t communication_transport_receive(
       (payload_size >
        communication_service.transport->maximum_payload_size)) {
     return COMMUNICATION_STATUS_INVALID_ARGUMENT;
+  }
+
+  /*
+   * OTA 等系统级控制帧不属于某一个传感器的数据地址。
+   * 必须在 receive_address 查表和普通数据事件队列之前处理，否则使用其他
+   * CAN ID 的升级命令会被当作“未知设备”丢弃。
+   */
+  if ((communication_service.system_frame_handler != NULL) &&
+      communication_service.system_frame_handler(
+          receive_address, payload, payload_size,
+          communication_service.system_frame_handler_context)) {
+    return COMMUNICATION_STATUS_OK;
   }
 
   device = communication_find_receive_address(receive_address);

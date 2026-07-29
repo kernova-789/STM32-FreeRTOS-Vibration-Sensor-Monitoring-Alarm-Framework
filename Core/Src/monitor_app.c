@@ -14,12 +14,15 @@
 
 #define MONITOR_TASK_STACK_DEPTH (configMINIMAL_STACK_SIZE + 160U)
 #define MONITOR_TASK_PRIORITY (tskIDLE_PRIORITY + 3U)
-#define MONITOR_TASK_PERIOD_MS 20U
+#define MONITOR_TASK_PERIOD_MS 2U
 #define MONITOR_DISPLAY_PERIOD_MS 200U
 #define MONITOR_COMMUNICATION_EVENTS_PER_CYCLE 32U
-#define MONITOR_SENSOR_STARTUP_DELAY_MS 200U
+#define MONITOR_SENSOR_STARTUP_DELAY_MS 1200U
 #define MONITOR_IOCTL_TIMEOUT_MS 50U
 #define MONITOR_FLASH_SETTLE_DELAY_MS 2U
+#define MONITOR_OTA_STREAM_STOP_SETTLE_DELAY_MS 10U
+#define MONITOR_RECEIVE_INDICATOR_DURATION_MS 50U
+#define MONITOR_NOTIFICATION_BOOTLOADER_REQUEST (UINT32_C(1) << 0U)
 
 typedef struct {
   communication_sensor_id_t sensor_id;
@@ -36,6 +39,7 @@ typedef struct {
   size_t displayed_sensor_index;
   TaskHandle_t task;
   TickType_t last_display_update_ticks;
+  bool bootloader_request_pending;
 } monitor_app_service_t;
 
 static monitor_app_service_t monitor_service;
@@ -128,6 +132,23 @@ BaseType_t monitor_app_init(communication_sensor_id_t displayed_sensor_id) {
   return pdPASS;
 }
 
+BaseType_t monitor_app_request_bootloader(void) {
+  TaskHandle_t task;
+
+  taskENTER_CRITICAL();
+  task = monitor_service.task;
+  if (task == NULL) {
+    monitor_service.bootloader_request_pending = true;
+  }
+  taskEXIT_CRITICAL();
+
+  if (task == NULL) {
+    return pdPASS;
+  }
+  return xTaskNotify(task, MONITOR_NOTIFICATION_BOOTLOADER_REQUEST,
+                     eSetBits);
+}
+
 static void monitor_task(void *argument) {
   const TickType_t period_ticks = pdMS_TO_TICKS(MONITOR_TASK_PERIOD_MS);
   TickType_t last_wake_ticks;
@@ -140,6 +161,21 @@ static void monitor_task(void *argument) {
 
   for (;;) {
     const TickType_t current_ticks = xTaskGetTickCount();
+    uint32_t notifications = 0U;
+    uint32_t notified_bits = 0U;
+
+    taskENTER_CRITICAL();
+    if (monitor_service.bootloader_request_pending) {
+      notifications |= MONITOR_NOTIFICATION_BOOTLOADER_REQUEST;
+      monitor_service.bootloader_request_pending = false;
+    }
+    taskEXIT_CRITICAL();
+    (void)xTaskNotifyWait(0U, MONITOR_NOTIFICATION_BOOTLOADER_REQUEST,
+                          &notified_bits, 0U);
+    notifications |= notified_bits;
+    if ((notifications & MONITOR_NOTIFICATION_BOOTLOADER_REQUEST) != 0U) {
+      monitor_enter_bootloader();
+    }
 
     monitor_process_communication_events();
     monitor_process_screen_events();
@@ -152,6 +188,7 @@ static void monitor_task(void *argument) {
 
 static void monitor_process_communication_events(void) {
   communication_event_t event;
+  bool external_data_received = false;
 
   for (size_t processed = 0U;
        processed < MONITOR_COMMUNICATION_EVENTS_PER_CYCLE; ++processed) {
@@ -161,6 +198,7 @@ static void monitor_process_communication_events(void) {
     if (communication_receive_event(&event, 0U) != pdPASS) {
       break;
     }
+    external_data_received = true;
     sensor = monitor_find_sensor(event.sensor_id);
     if (sensor == NULL) {
       continue;
@@ -170,6 +208,11 @@ static void monitor_process_communication_events(void) {
     } else if (vibration_sensor_event_is_bootloader_request(&event)) {
       monitor_enter_bootloader();
     }
+  }
+
+  if (external_data_received) {
+    (void)indicator_set_device(INDICATOR_DEVICE_STATUS_LED_GREEN, true,
+                               MONITOR_RECEIVE_INDICATOR_DURATION_MS, 0U);
   }
 }
 
@@ -249,6 +292,7 @@ static void monitor_process_screen_events(void) {
 static void monitor_process_sample(monitor_sensor_context_t *sensor,
                                    const vibration_sensor_sample_t *sample,
                                    TickType_t timestamp_ticks) {
+  screen_waveform_sample_t waveform_sample;
   bool output_changed;
 
   for (uint8_t axis = 0U; axis < VIBRATION_AXIS_COUNT; ++axis) {
@@ -260,8 +304,16 @@ static void monitor_process_sample(monitor_sensor_context_t *sensor,
     if (current > sensor->measurements.peak_centi_g[axis]) {
       sensor->measurements.peak_centi_g[axis] = current;
     }
+    waveform_sample.signed_centi_g[axis] =
+        (sample->signed_raw[axis] < 0)
+            ? (int16_t)-(int32_t)sample->magnitude_centi_g[axis]
+            : (int16_t)sample->magnitude_centi_g[axis];
   }
   sensor->display_window_has_sample = true;
+  if (sensor == monitor_displayed_sensor()) {
+    waveform_sample.timestamp_ticks = timestamp_ticks;
+    (void)screen_push_waveform_sample(&waveform_sample);
+  }
 
   output_changed =
       alarm_service_process_sample(&sensor->alarm, sample, timestamp_ticks);
@@ -329,10 +381,21 @@ static void monitor_update_display(TickType_t current_ticks, bool force) {
 
 static bool monitor_apply_sensor_settings(
     const monitor_sensor_context_t *sensor) {
-  return vibration_sensor_set_thresholds(
-             sensor->sensor_id, &sensor->settings.thresholds,
-             pdMS_TO_TICKS(MONITOR_IOCTL_TIMEOUT_MS)) ==
-         COMMUNICATION_STATUS_OK;
+  bool operation_ok = true;
+
+  if (vibration_sensor_set_sample_rate(
+          sensor->sensor_id, sensor->settings.sample_rate,
+          pdMS_TO_TICKS(MONITOR_IOCTL_TIMEOUT_MS)) !=
+      COMMUNICATION_STATUS_OK) {
+    operation_ok = false;
+  }
+  if (vibration_sensor_set_thresholds(
+          sensor->sensor_id, &sensor->settings.thresholds,
+          pdMS_TO_TICKS(MONITOR_IOCTL_TIMEOUT_MS)) !=
+      COMMUNICATION_STATUS_OK) {
+    operation_ok = false;
+  }
+  return operation_ok;
 }
 
 static bool monitor_apply_all_sensor_settings(void) {
@@ -411,8 +474,12 @@ static void monitor_clear_peak(screen_axis_t axis) {
 }
 
 static void monitor_enter_bootloader(void) {
-  (void)monitor_set_all_streaming(false);
-  vTaskDelay(pdMS_TO_TICKS(MONITOR_FLASH_SETTLE_DELAY_MS));
+  if (!monitor_set_all_streaming(false)) {
+    monitor_set_status(false);
+    (void)monitor_set_all_streaming(true);
+    return;
+  }
+  vTaskDelay(pdMS_TO_TICKS(MONITOR_OTA_STREAM_STOP_SETTLE_DELAY_MS));
 
   /*
    * 成功时 bootloader_ota_enter() 会直接复位。只有 Flash 擦写或校验失败
@@ -425,8 +492,6 @@ static void monitor_enter_bootloader(void) {
 }
 
 static void monitor_set_status(bool healthy) {
-  (void)indicator_set_device(INDICATOR_DEVICE_STATUS_LED_GREEN, healthy, 0U,
-                             0U);
   (void)indicator_set_device(INDICATOR_DEVICE_STATUS_LED_RED, !healthy, 0U,
                              0U);
 }
@@ -478,8 +543,7 @@ static void monitor_screen_settings_from_product(
   destination->trigger_count = source->trigger_count;
   destination->alarm_seconds = source->alarm_seconds;
   destination->auto_stop_alarm = source->auto_stop_alarm;
-  destination->auto_off.enabled = source->screen_auto_off_enabled;
-  destination->auto_off.timeout_seconds = source->screen_auto_off_seconds;
+  destination->sample_rate = source->sample_rate;
 }
 
 static void monitor_product_settings_from_screen(
@@ -493,7 +557,5 @@ static void monitor_product_settings_from_screen(
   destination->trigger_count = source->trigger_count;
   destination->alarm_seconds = source->alarm_seconds;
   destination->auto_stop_alarm = source->auto_stop_alarm;
-  destination->screen_auto_off_enabled = source->auto_off.enabled;
-  destination->screen_auto_off_seconds =
-      source->auto_off.timeout_seconds;
+  destination->sample_rate = source->sample_rate;
 }

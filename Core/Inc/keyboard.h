@@ -28,14 +28,6 @@ typedef struct {
 } keyboard_event_t;
 
 /*
- * 可选的非阻塞按键活动回调。键盘任务产生经过消抖的 PRESSED 事件时调用，
- * 即使事件队列已满也会执行，用于可靠唤醒自动关闭的屏幕。
- */
-typedef void (*keyboard_activity_callback_t)(void *context);
-void keyboard_set_activity_callback(keyboard_activity_callback_t callback,
-                                    void *context);
-
-/*
  * 初始化键盘队列和扫描任务。
  *
  * 应在系统初始化阶段调用，不允许多个任务并发调用。

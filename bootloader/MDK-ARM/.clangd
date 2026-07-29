@@ -1,5 +1,10 @@
 CompileFlags:
-  CompilationDatabase: e:\Projects\CAN_DISPLAY_NOVA_GPT\new_bootloader\bootloader\MDK-ARM\out\bootloader\bootloader
+  CompilationDatabase: c:\Users\29951\Documents\Projects\CAN_DISDLAY_NOVA\CAN_DISPLAY\bootloader\MDK-ARM\out\bootloader\bootloader
+
+---
+If:
+  PathMatch: .*\.(c|C|h)$
+CompileFlags:
   Add:
     - -include
-    - e:\Projects\CAN_DISPLAY_NOVA_GPT\new_bootloader\bootloader\MDK-ARM\out\bootloader\bootloader\compile_macros.h
+    - c:\Users\29951\Documents\Projects\CAN_DISDLAY_NOVA\CAN_DISPLAY\bootloader\MDK-ARM\out\bootloader\bootloader\compile_macros_c.h

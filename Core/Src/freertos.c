@@ -25,6 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "bootloader_ota.h"
 #include "can.h"
 #include "can_app.h"
 #include "communication.h"
@@ -68,6 +69,9 @@ const osThreadAttr_t defaultTask_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
+static bool product_system_frame_handler(
+    communication_physical_address_t receive_address, const uint8_t *payload,
+    size_t payload_size, void *context);
 
 /* USER CODE END FunctionPrototypes */
 
@@ -131,6 +135,8 @@ void StartDefaultTask(void *argument)
       .transport = transport,
       .sensors = product_sensor_table,
       .sensor_count = product_sensor_count,
+      .system_frame_handler = product_system_frame_handler,
+      .system_frame_handler_context = NULL,
   };
 
   (void)argument;
@@ -157,5 +163,16 @@ void StartDefaultTask(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+static bool product_system_frame_handler(
+    communication_physical_address_t receive_address, const uint8_t *payload,
+    size_t payload_size, void *context) {
+  (void)receive_address;
+  (void)context;
+
+  if (!bootloader_ota_is_request_frame(payload, payload_size)) {
+    return false;
+  }
+  return monitor_app_request_bootloader() == pdPASS;
+}
 
 /* USER CODE END Application */

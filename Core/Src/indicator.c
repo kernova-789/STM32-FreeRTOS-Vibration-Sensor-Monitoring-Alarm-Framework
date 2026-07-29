@@ -10,7 +10,7 @@ _Static_assert(INDICATOR_DEVICE_COUNT <= 32U,
                "Indicator state mask only supports up to 32 devices");
 
 #define INDICATOR_QUEUE_LENGTH 10U
-#define INDICATOR_TASK_STACK_DEPTH 64U
+#define INDICATOR_TASK_STACK_DEPTH 128U
 #define INDICATOR_TASK_PRIORITY (tskIDLE_PRIORITY + 4U)
 
 #define INDICATOR_VALID_MASK                                                   \

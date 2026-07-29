@@ -7,6 +7,7 @@
 #define LEGACY_CAN_COMMAND_SET_THRESHOLDS 0x02U
 #define LEGACY_CAN_COMMAND_START_STREAM 0x03U
 #define LEGACY_CAN_COMMAND_STOP_STREAM 0x04U
+#define LEGACY_CAN_COMMAND_SET_SAMPLE_RATE 0x05U
 #define LEGACY_CAN_BOOTLOADER_MARKER 0x06U
 
 static communication_status_t
@@ -93,6 +94,22 @@ static communication_status_t legacy_can_vibration_ioctl(
     }
     frame[1] = *enabled ? LEGACY_CAN_COMMAND_START_STREAM
                         : LEGACY_CAN_COMMAND_STOP_STREAM;
+    return communication_device_send(device, frame, sizeof(frame),
+                                     timeout_ticks);
+  }
+
+  case VIBRATION_SENSOR_COMMAND_SET_SAMPLE_RATE: {
+    const vibration_sensor_sample_rate_t *sample_rate =
+        (const vibration_sensor_sample_rate_t *)argument;
+
+    if ((sample_rate == NULL) ||
+        (argument_size != sizeof(*sample_rate)) ||
+        !vibration_sensor_sample_rate_is_supported(*sample_rate)) {
+      return COMMUNICATION_STATUS_INVALID_ARGUMENT;
+    }
+    frame[1] = LEGACY_CAN_COMMAND_SET_SAMPLE_RATE;
+    frame[2] = 0U;
+    frame[3] = *sample_rate;
     return communication_device_send(device, frame, sizeof(frame),
                                      timeout_ticks);
   }

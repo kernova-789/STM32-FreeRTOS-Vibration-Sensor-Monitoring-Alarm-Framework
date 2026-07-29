@@ -6,6 +6,6 @@
     "memory-inspector.groupings.MAUsPerGroup": 4,
     "memory-inspector.scrollingBehavior": "Auto-Append",
     "clangd.arguments": [
-        "--compile-commands-dir=e:\\Projects\\CAN_DISPLAY_NOVA\\MDK-ARM\\out\\CAN_DISPLAY_NOVA\\CAN_DISPLAY_NOVA"
+        "--compile-commands-dir=c:\\Users\\29951\\Documents\\Projects\\CAN_DISDLAY_NOVA\\CAN_DISPLAY\\MDK-ARM\\out\\CAN_DISPLAY_NOVA\\CAN_DISPLAY_NOVA"
     ]
 }

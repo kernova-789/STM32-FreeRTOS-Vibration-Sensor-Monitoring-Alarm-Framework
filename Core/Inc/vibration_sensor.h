@@ -21,6 +21,8 @@ typedef enum {
       COMMUNICATION_CODE(VIBRATION_SENSOR_DRIVER_CLASS, 0x0002U),
   VIBRATION_SENSOR_COMMAND_READ_SAMPLE =
       COMMUNICATION_CODE(VIBRATION_SENSOR_DRIVER_CLASS, 0x0003U),
+  VIBRATION_SENSOR_COMMAND_SET_SAMPLE_RATE =
+      COMMUNICATION_CODE(VIBRATION_SENSOR_DRIVER_CLASS, 0x0004U),
 } vibration_sensor_command_t;
 
 typedef enum {
@@ -50,6 +52,23 @@ typedef struct {
 } vibration_sensor_sample_t;
 
 /*
+ * 采样率枚举值与传感器命令 01 05 00 NN 中的 NN 完全一致。
+ * 0x07（8889 Hz）和 0x08（13333.5 Hz）有意不列入支持范围。
+ */
+typedef uint8_t vibration_sensor_sample_rate_t;
+enum {
+  VIBRATION_SENSOR_SAMPLE_RATE_533_34_HZ = 0U,
+  VIBRATION_SENSOR_SAMPLE_RATE_888_90_HZ,
+  VIBRATION_SENSOR_SAMPLE_RATE_1066_68_HZ,
+  VIBRATION_SENSOR_SAMPLE_RATE_1333_35_HZ,
+  VIBRATION_SENSOR_SAMPLE_RATE_2666_70_HZ,
+  VIBRATION_SENSOR_SAMPLE_RATE_2963_00_HZ,
+  VIBRATION_SENSOR_SAMPLE_RATE_5333_34_HZ,
+
+  VIBRATION_SENSOR_SAMPLE_RATE_COUNT,
+};
+
+/*
  * 面向应用层的类型安全接口。函数先校验并封装参数，
  * 内部再通过 communication_ioctl() 分派到对应设备驱动。
  */
@@ -60,9 +79,17 @@ communication_status_t vibration_sensor_set_thresholds(
 communication_status_t
 vibration_sensor_set_streaming(communication_sensor_id_t sensor_id,
                                bool enabled, TickType_t timeout_ticks);
+communication_status_t vibration_sensor_set_sample_rate(
+    communication_sensor_id_t sensor_id,
+    vibration_sensor_sample_rate_t sample_rate, TickType_t timeout_ticks);
 communication_status_t
 vibration_sensor_read_sample(communication_sensor_id_t sensor_id,
                              TickType_t timeout_ticks);
+
+bool vibration_sensor_sample_rate_is_supported(
+    vibration_sensor_sample_rate_t sample_rate);
+uint32_t vibration_sensor_sample_rate_centi_hz(
+    vibration_sensor_sample_rate_t sample_rate);
 
 bool vibration_sensor_event_get_sample(const communication_event_t *event,
                                        vibration_sensor_sample_t *sample);

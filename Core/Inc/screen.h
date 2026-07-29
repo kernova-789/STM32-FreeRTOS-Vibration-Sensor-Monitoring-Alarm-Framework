@@ -3,6 +3,7 @@
 #include "FreeRTOS.h"
 #include "stdbool.h"
 #include "stdint.h"
+#include "vibration_sensor.h"
 
 typedef enum {
   SCREEN_AXIS_X = 0,
@@ -20,19 +21,19 @@ typedef struct {
 } screen_measurements_t;
 
 typedef struct {
-  bool enabled;
-  uint16_t timeout_seconds;
-} screen_auto_off_settings_t;
-
-typedef struct {
   uint16_t min_centi_g[SCREEN_AXIS_COUNT];
   uint16_t max_centi_g[SCREEN_AXIS_COUNT];
   uint16_t trigger_period_ms;
   uint16_t trigger_count;
   uint16_t alarm_seconds;
   bool auto_stop_alarm;
-  screen_auto_off_settings_t auto_off;
+  vibration_sensor_sample_rate_t sample_rate;
 } screen_settings_t;
+
+typedef struct {
+  int16_t signed_centi_g[SCREEN_AXIS_COUNT];
+  TickType_t timestamp_ticks;
+} screen_waveform_sample_t;
 
 typedef enum {
   /* 保存并下发事件中携带的配置。 */
@@ -61,6 +62,10 @@ BaseType_t screen_init(const screen_settings_t *initial_settings);
 BaseType_t
 screen_update_measurements(const screen_measurements_t *measurements);
 
+/* 按采样时间汇总实时有符号振动值，波形页显示最近五秒的包络。 */
+BaseType_t
+screen_push_waveform_sample(const screen_waveform_sample_t *sample);
+
 /* 替换界面显示的配置，例如从 Flash 加载配置后调用。 */
 BaseType_t screen_set_settings(const screen_settings_t *settings,
                                TickType_t timeout_ticks);
@@ -71,15 +76,3 @@ BaseType_t screen_receive_event(screen_event_t *event,
 
 /* 复制屏幕模块最近接收或确认的配置。 */
 BaseType_t screen_get_settings(screen_settings_t *settings);
-
-/*
- * 异步打开或关闭 LCD 显示。关闭期间仍保留帧缓冲和界面状态。
- */
-BaseType_t screen_set_enabled(bool enabled);
-BaseType_t screen_turn_on(void);
-BaseType_t screen_turn_off(void);
-
-/* 只更新自动息屏配置，只能在任务上下文调用。 */
-BaseType_t screen_set_auto_off(
-    const screen_auto_off_settings_t *auto_off_settings,
-    TickType_t timeout_ticks);

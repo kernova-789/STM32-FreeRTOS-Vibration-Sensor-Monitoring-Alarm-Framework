@@ -1,7 +1,7 @@
 {
     "debug.hideSlowPreLaunchWarning": true,
     "clangd.arguments": [
-        "--compile-commands-dir=e:\\Projects\\CAN_DISPLAY_NOVA_GPT\\new_bootloader\\bootloader\\MDK-ARM\\out\\bootloader\\bootloader"
+        "--compile-commands-dir=c:\\Users\\29951\\Documents\\Projects\\CAN_DISDLAY_NOVA\\CAN_DISPLAY\\bootloader\\MDK-ARM\\out\\bootloader\\bootloader"
     ],
     "commentTranslate.source": "Cheng-MaoMao.ai-powered-comment-translate-extension-ai-powered-comment-translate-extension",
     "cmake.sourceDirectory": "D:/CAN_DISPLAY/bootloader/bootloader/MDK-ARM/tmp",
