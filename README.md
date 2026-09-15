@@ -1,3 +1,5 @@
+This project is built using the STM32F103CBT6 microcontroller and FreeRTOS.
+
 This project was created to monitor the real-time operating status of vibration sensors. Rather than being a fully completed product, it is more accurately described as a **development framework** designed to support one or multiple sensors using the **CAN or Modbus communication protocol**.
 
 The framework supports real-time display of vibration values and waveforms on a screen. Users can set vibration thresholds using physical buttons, and the system provides **LED and buzzer alarm mechanisms** when abnormal conditions are detected. The current operating status can also be displayed in real time, indicating whether the system is operating normally. In addition, the system supports **firmware/software upgrade functionality**.
@@ -22,7 +24,7 @@ The framework is designed to be highly adaptable to different hardware configura
 
 When different hardware is used, only the corresponding hardware-specific modules need to be rewritten. The rest of the project does not need to be modified, which significantly improves the **portability, scalability, and maintainability** of the framework.
 
-
+本项目基于STM32F103CBT6单片机与Freertos开发
 这是为了检测(震动)传感器实时运行状态而创建的项目，比起说这是一个完成的项目，不如说这是一套框架，适用于同时连接一个(或多个)采用CAN(或Modbus)协议的传感器。
 该项目支持屏幕实时显示震动数值与图像，并且可使用按钮设置震动阈值，拥有LED与蜂鸣器报警机制，并可实时显示运行状态是否正常，可通过软件实现升级功能。
 该项目作为一套开发框架，采用了分层结构，各个功能各司其职，便于后期升级与长期维护。
